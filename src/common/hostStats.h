@@ -19,8 +19,21 @@ struct ThreadUsage {
 
 // Host-wide and process-wide resource usage. Missing values are std::nullopt; rates are per
 // second since the previous sample.
+struct CpuUsage {
+	uint32_t id = 0;
+	std::optional<double> percent;
+};
+
+// The native backend supplies the DRM node it actually opened.
+void SetHostStatsGpuDevice(const std::string& device);
+
 struct HostStats {
 	uint32_t logical_cores = 0;
+	std::vector<CpuUsage> cpu_usage;
+	std::optional<double> cpu_temperature;
+	std::optional<double> gpu_temperature;
+	std::optional<uint64_t> vram_used;
+	std::optional<uint64_t> vram_total;
 
 	// Processing.
 	std::optional<double>    process_cpu_percent; // Share of all logical cores, 0-100.

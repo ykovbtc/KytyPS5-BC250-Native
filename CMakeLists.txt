@@ -407,6 +407,10 @@ add_executable(scalar_provenance_tests EXCLUDE_FROM_ALL
 target_link_libraries(scalar_provenance_tests fmt::fmt xbyak::xbyak)
 target_include_directories(scalar_provenance_tests PRIVATE ${inc_headers})
 
+add_executable(performance_metrics_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PerformanceMetricsTests.cpp")
+target_include_directories(performance_metrics_tests PRIVATE "${KYTY_SOURCE_DIR}")
+add_test(NAME performance_metrics_tests COMMAND performance_metrics_tests)
+
 add_executable(build_flags_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/BuildFlagsTests.cpp")
 
 add_executable(page_manager_tests EXCLUDE_FROM_ALL
