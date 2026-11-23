@@ -1,5 +1,6 @@
 #include "common/performanceMetrics.h"
 #include "common/hostStatsLinux.h"
+#include "graphics/native_gpu/upscaler/hlxOutputSize.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -87,5 +88,18 @@ int main() {
 	Check(ParseUnsigned("0") == 0 && ParseUnsigned("123\n") == 123 && !ParseUnsigned("-1") && !ParseUnsigned(" -1") &&
 	      !ParseUnsigned("12watts") && !ParseUnsigned(""), "strict unsigned sensors");
 	Check(Temperature("72000") == 72.0 && !Temperature("999999") && !Temperature("bad"), "temperature validation");
+	Check(ClockMHz("2000000000") == 2000 && !ClockMHz("0") && !ClockMHz("bad"), "AMDGPU graphics clock in Hz");
+	std::istringstream clocks("0: 500Mhz\n1: 2000Mhz *\n2: 2200Mhz\n");
+	std::istringstream inactive("0: 500Mhz\n1: 2200Mhz\n");
+	Check(ActiveClockMHz(clocks) == 2000 && !ActiveClockMHz(inactive), "only the active graphics DPM level");
+	using NativeUpscaler::HlxHeightLimit;
+	using NativeUpscaler::LimitHlxExtent;
+	Check(HlxHeightLimit(1440, 1800) == 1440 && HlxHeightLimit(2160, 1080) == 1080 &&
+	      HlxHeightLimit(0, 1800) == 1800 && HlxHeightLimit(0, 0) == 2160, "HDMI and HLX target precedence");
+	Check(LimitHlxExtent(3840, 2160, 1440) == std::pair{2560u, 1440u} &&
+	      LimitHlxExtent(3840, 2160, 1080) == std::pair{1920u, 1080u} &&
+	      LimitHlxExtent(1920, 1080, 2160) == std::pair{1920u, 1080u}, "bound reconstruction without enlarging the title output");
+	Check(NativeUpscaler::HlxDispatchExtent(3840, 2160, 2560, 1440) == std::pair{2560u, 1440u} &&
+	      NativeUpscaler::HlxDispatchExtent(1920, 1080, 2560, 1440) == std::pair{1920u, 1080u}, "helper wire dimensions track the active rectangle");
 	std::puts("Performance metrics tests passed");
 }

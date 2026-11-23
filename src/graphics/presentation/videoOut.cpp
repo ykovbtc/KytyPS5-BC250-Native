@@ -32,6 +32,8 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
+#include <string_view>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -228,6 +230,7 @@ struct VideoOutConfig {
 	uint32_t                            slave_count = 0;
 	int                                 flip_rate   = 0;
 	uint64_t                            output_mode = VIDEO_OUT_OUTPUT_MODE_DEFAULT;
+	bool                                wqhd_detection = false;
 	float                               gamma       = 1.0f;
 	uint64_t                            pre_vblanks = 0;
 	uint64_t                            flip_vblank = 0; // vblank_status.count at the last flip.
@@ -932,6 +935,7 @@ int VideoOutDriver::Impl::Open(int bus_type, int index) {
 		EXIT("video-out port generation wrapped\n");
 	}
 	config.output_mode               = VIDEO_OUT_OUTPUT_MODE_DEFAULT;
+	config.wqhd_detection            = false;
 	config.flip_status               = VideoOutFlipStatus();
 	config.flip_status.flipArg       = -1;
 	config.flip_status.currentBuffer = -1;
@@ -3200,6 +3204,12 @@ KYTY_SYSV_ABI int VideoOutGetOutputStatus(int handle, VideoOutOutputStatus* stat
 	// Primary output reports 4K unless param.json Video-out Info enables resolution detection.
 	status->resolution =
 	    ((attribute3 & 4) != 0 && driver.width < 3840 && driver.height < 2160 ? 1u : 2u);
+	if (const char* mode = std::getenv("KYTYPS5_HDMI_MODE")) {
+		const std::string_view size(mode);
+		if (size == "1920x1080") status->resolution = 1;
+		if (size == "3840x2160") status->resolution = 2;
+		if (size == "2560x1440") status->resolution = ctx->wqhd_detection ? 4u : 1u;
+	}
 	status->dynamicRange = (attribute & 0x20000000) != 0 && driver.IsHdrSupported() ? 2u : 1u;
 	status->refreshRate =
 	    (ctx->output_mode == VIDEO_OUT_OUTPUT_MODE_119_88HZ || Config::GetVblankFrequency() >= 119
@@ -3215,9 +3225,12 @@ KYTY_SYSV_ABI int VideoOutGetOutputStatus(int handle, VideoOutOutputStatus* stat
 }
 
 KYTY_SYSV_ABI int VideoOutAllowOutputResolutionWqhdDetection(int handle) {
-	if (DriverState().Get(handle) == nullptr) {
+	auto* ctx = DriverState().Get(handle);
+	if (ctx == nullptr) {
 		return VIDEO_OUT_ERROR_INVALID_HANDLE;
 	}
+	Common::LockGuard lock(ctx->mutex);
+	ctx->wqhd_detection = true;
 	return OK;
 }
 

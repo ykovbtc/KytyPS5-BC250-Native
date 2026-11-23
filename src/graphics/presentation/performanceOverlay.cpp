@@ -534,7 +534,8 @@ void DrawPerformance(const Snapshot& shown, vk::Extent2D extent, float scale) {
 		vram = Fmt("%.0f / %.0f MiB (%.0f%%)", *host.vram_used / 1048576.0,
 		           *host.vram_total / 1048576.0, 100.0 * *host.vram_used / *host.vram_total);
 	}
-	ImGui::Text("GPU %s   VRAM %s   %s", Percent(host.gpu_percent).c_str(), vram.c_str(),
+	const std::string clock = host.gpu_clock_mhz ? std::to_string(*host.gpu_clock_mhz) : "N/A";
+	ImGui::Text("GPU %s   %s MHz   VRAM %s   %s", Percent(host.gpu_percent).c_str(), clock.c_str(), vram.c_str(),
 	            temperature(host.gpu_temperature).c_str());
 	ImGui::Text("CPU %s   %s", Percent(host.system_cpu_percent).c_str(), temperature(host.cpu_temperature).c_str());
 	std::string row;
