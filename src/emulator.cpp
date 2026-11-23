@@ -1,3 +1,5 @@
+#include "graphics/presentation/performanceOverlay.h"
+
 #include "emulator.h"
 
 #include "common/abi.h"
@@ -140,6 +142,7 @@ static void Execute(const std::filesystem::path& game_patch) {
 }
 
 void Run(const RunOptions& options) {
+	Libs::Graphics::PerformanceOverlayStartSession();
 	if (options.app0_dir.empty()) {
 		EXIT("app0 directory is required\n");
 	}

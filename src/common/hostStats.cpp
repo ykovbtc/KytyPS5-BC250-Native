@@ -4,6 +4,11 @@
 #include "common/timer.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <mutex>
+#include <map>
+#include <set>
+#include "common/hostStatsLinux.h"
 #include <thread>
 #include <unordered_map>
 
@@ -33,6 +38,8 @@
 namespace Common {
 
 namespace {
+std::mutex gpu_device_mutex;
+std::string gpu_device;
 
 // Cumulative counters; rates come from the difference between two samples.
 struct Counters {
@@ -50,6 +57,7 @@ struct Counters {
 	std::optional<uint64_t>              disk_write;
 	std::unordered_map<uint64_t, Thread> threads;
 	uint64_t                             wall_ns = 0;
+	std::map<uint32_t, HostStatsLinux::CpuTicks> cpus;
 };
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
@@ -384,7 +392,76 @@ std::optional<uint64_t> Find(const ProcValues& values, const char* key) {
 	return it != values.end() ? std::optional(it->second) : std::nullopt;
 }
 
-struct PlatformState {};
+struct PlatformState {
+	std::set<std::string> missing;
+};
+
+std::string ReadSensor(const std::filesystem::path& path) {
+	std::ifstream file(path);
+	std::string value;
+	std::getline(file, value);
+	return value;
+}
+
+std::vector<std::filesystem::path> SensorEntries(const std::filesystem::path& path) {
+	std::vector<std::filesystem::path> result;
+	std::error_code error;
+	for (std::filesystem::directory_iterator it(path, error), end; !error && it != end; it.increment(error)) {
+		result.push_back(it->path());
+	}
+	std::sort(result.begin(), result.end());
+	return result;
+}
+
+std::optional<double> ReadTemperature(const std::filesystem::path& hwmon, bool cpu) {
+	std::optional<double> fallback;
+	for (const auto& directory: SensorEntries(hwmon)) {
+		const auto name = ReadSensor(directory / "name");
+		if (cpu && name != "k10temp" && name != "zenpower" && name != "coretemp") continue;
+		for (const auto& path: SensorEntries(directory)) {
+			const auto filename = path.filename().string();
+			if (filename.rfind("temp", 0) != 0 || !filename.ends_with("_input")) continue;
+			const auto value = HostStatsLinux::Temperature(ReadSensor(path));
+			if (!value) continue;
+			const auto label = ReadSensor(directory / (filename.substr(0, filename.size() - 6) + "_label"));
+			if (cpu) {
+				if (label == "Tdie" || label.rfind("Package id", 0) == 0) return value;
+				if (label == "Tctl") fallback = value;
+			} else {
+				if (label == "edge") return value;
+				if (!fallback) fallback = value;
+			}
+		}
+	}
+	return fallback;
+}
+
+void SampleHardware(PlatformState& state, HostStats& stats) {
+	std::string device;
+	{
+		std::lock_guard lock(gpu_device_mutex);
+		device = gpu_device;
+	}
+	if (!device.empty()) {
+		const auto path = std::filesystem::path("/sys/class/drm") /
+		                  std::filesystem::path(device).filename() / "device";
+		const auto busy = HostStatsLinux::ParseUnsigned(ReadSensor(path / "gpu_busy_percent"));
+		if (busy && *busy <= 100) stats.gpu_percent = static_cast<double>(*busy);
+		stats.vram_used = HostStatsLinux::ParseUnsigned(ReadSensor(path / "mem_info_vram_used"));
+		stats.vram_total = HostStatsLinux::ParseUnsigned(ReadSensor(path / "mem_info_vram_total"));
+		stats.gpu_temperature = ReadTemperature(path / "hwmon", false);
+	}
+	stats.cpu_temperature = ReadTemperature("/sys/class/hwmon", true);
+	const auto missing = [&](bool available, const char* name) {
+		if (!available && state.missing.insert(name).second) {
+			std::fprintf(stderr, "performance: %s unavailable (device not identified, or kernel sensor missing/unreadable/invalid)\n", name);
+		}
+	};
+	missing(stats.gpu_percent.has_value(), "GPU utilization");
+	missing(stats.vram_used.has_value() && stats.vram_total.value_or(0) > 0, "VRAM");
+	missing(stats.gpu_temperature.has_value(), "GPU temperature");
+	missing(stats.cpu_temperature.has_value(), "CPU temperature");
+}
 
 void SampleThreads(HostStats& stats, Counters& now) {
 	static const double ns_per_tick = 1e9 / static_cast<double>(std::max(sysconf(_SC_CLK_TCK), 1L));
@@ -424,23 +501,25 @@ void SampleThreads(HostStats& stats, Counters& now) {
 	}
 }
 
-void SamplePlatform(PlatformState& /*state*/, HostStats& stats, Counters& now) {
+void SamplePlatform(PlatformState& state, HostStats& stats, Counters& now) {
 	SampleRusage(now);
 
+	SampleHardware(state, stats);
 	std::ifstream cpu_file("/proc/stat");
-	std::string   label;
-	if (cpu_file >> label && label == "cpu") {
-		uint64_t total = 0;
-		uint64_t idle  = 0;
-		uint64_t value = 0;
-		for (int index = 0; index < 8 && cpu_file >> value; index++) {
-			total += value;
-			if (index == 3 || index == 4) { // idle, iowait
-				idle += value;
-			}
+	std::string line;
+	while (std::getline(cpu_file, line)) {
+		std::istringstream input(line);
+		std::string label;
+		input >> label;
+		if (label.rfind("cpu", 0) != 0) continue;
+		const auto ticks = HostStatsLinux::ParseCpuTicks(input);
+		if (!ticks) continue;
+		if (label == "cpu") {
+			now.system_total = ticks->total;
+			now.system_busy = ticks->busy;
+		} else if (const auto id = HostStatsLinux::ParseUnsigned(label.substr(3)); id && *id <= UINT32_MAX) {
+			now.cpus.emplace(static_cast<uint32_t>(*id), *ticks);
 		}
-		now.system_total = total;
-		now.system_busy  = total - idle;
 	}
 
 	const auto status         = ReadProcValues("/proc/self/status");
@@ -506,6 +585,11 @@ struct HostStatsSampler::Impl {
 	bool          has_last      = false;
 };
 
+void SetHostStatsGpuDevice(const std::string& device) {
+	std::lock_guard lock(gpu_device_mutex);
+	gpu_device = device;
+}
+
 HostStatsSampler::HostStatsSampler(): m_impl(std::make_unique<Impl>()) {}
 
 HostStatsSampler::~HostStatsSampler() = default;
@@ -562,6 +646,14 @@ HostStats HostStatsSampler::Sample() {
 		if (stats.busiest_threads.size() > BUSIEST_THREADS) {
 			stats.busiest_threads.resize(BUSIEST_THREADS);
 		}
+	}
+	for (const auto& [id, ticks]: now.cpus) {
+		std::optional<double> percent;
+		const auto previous = last.cpus.find(id);
+		if (m_impl->has_last && previous != last.cpus.end()) {
+			percent = HostStatsLinux::CpuPercent(ticks, previous->second);
+		}
+		stats.cpu_usage.push_back({id, percent});
 	}
 	m_impl->last     = std::move(now);
 	m_impl->has_last = true;

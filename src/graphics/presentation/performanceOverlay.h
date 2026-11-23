@@ -9,6 +9,8 @@ namespace Libs::Graphics {
 
 struct GraphicContext;
 
+void PerformanceOverlayStartSession();
+
 // Called for each main-bus guest flip, with the guest's video-out size.
 void PerformanceOverlayRecordFlip(uint32_t guest_width, uint32_t guest_height) noexcept;
 
@@ -17,7 +19,7 @@ void               TogglePerformanceOverlay() noexcept;
 // Switches between the compact and the detailed panel, showing the panel if it was hidden.
 void TogglePerformanceOverlayDetails() noexcept;
 
-// 0 hidden, 1 compact, 2 detailed (the game menu's monitoring switch).
+// 0 hidden, 1 compact, 2 detailed, 3 performance (the game menu's monitoring switch).
 [[nodiscard]] int PerformanceOverlayMode() noexcept;
 void              SetPerformanceOverlayMode(int mode) noexcept;
 

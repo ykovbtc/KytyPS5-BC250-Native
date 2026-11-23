@@ -1,6 +1,8 @@
 #ifndef EMULATOR_SRC_GRAPHICS_NATIVE_GPU_GEMBACKING_H_
 #define EMULATOR_SRC_GRAPHICS_NATIVE_GPU_GEMBACKING_H_
 
+#include "common/hostStats.h"
+
 #include <cstdint>
 
 // amdgpu GEM backing for guest "physical" memory on the BC-250 native GPU backend. Only real
@@ -331,6 +333,7 @@ public:
 			delete self;
 			return nullptr;
 		}
+		Common::SetHostStatsGpuDevice(device);
 		self->InitVaTimeline();
 		self->m_mem_fd = ::memfd_create("KytyDirectMemoryGem", MFD_CLOEXEC);
 		if (self->m_mem_fd < 0 || ::ftruncate(self->m_mem_fd, static_cast<off_t>(size)) != 0) {

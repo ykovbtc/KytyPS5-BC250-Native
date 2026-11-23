@@ -1,4 +1,5 @@
 #include "graphics/native_gpu/nativeUpscaler.h"
+#include "common/performanceMetrics.h"
 
 #if defined(KYTY_ENABLE_EXPERIMENTAL_NATIVE_UPSCALER) && defined(__linux__)
 #include "graphics/native_gpu/gemBacking.h"
@@ -100,6 +101,9 @@ struct Resource {
 	bool                  present = false;
 };
 struct Snapshot {
+	Common::Performance::Rendering performance;
+	std::pair<uint32_t, uint32_t> performance_target {};
+	std::string performance_preset = "Unknown";
 	uint64_t                   id = 0, params = 0, packet = 0, shader = 0;
 	uint32_t                   stage = 0;
 	Resource                   raster_history; // second MRT, kept current for native-TAA fallback
@@ -1916,6 +1920,7 @@ void Worker() {
 			FgComplete(s->fg_set, w.reached);
 		}
 		if (!s->gated) {
+			if (w.reached) Common::Performance::Observe(s->performance);
 			if (w.id <= 4 || w.id % 600 == 0) {
 				LogJson("{\"event\":\"framegen_boundary\",\"invocation\":%llu,\"reached\":%d,\"set\":%d,\"render\":[%u,%u],"
 				        "\"near\":%.6g,\"far\":%.6g,\"fov\":%.6g,\"frame_ms\":%.4g,\"mv_scale\":[%.6g,%.6g],\"jitter\":[%.4g,%.4g]}",
@@ -1927,6 +1932,9 @@ void Worker() {
 		}
 		const Mode mode = GetMode();
 		if (!w.reached) {
+			Common::Performance::Rendering unknown;
+			unknown.session = s->performance.session;
+			Common::Performance::Observe(std::move(unknown));
 			LogJson("{\"event\":\"fallback\",\"invocation\":%llu,\"why\":\"boundary_not_reached\"}", static_cast<unsigned long long>(w.id));
 			Release(*s, false);
 			continue;
@@ -2056,6 +2064,20 @@ void Worker() {
 			} else if (g_hlx_good.fetch_add(1) + 1 >= 180) {
 				PoolDemoteAsync(); // FSR3's working memory has been idle for ~3 s
 			}
+			auto observation = s->performance;
+			if (ok) {
+				observation.upscaler = f.backend == 1 ? "HLX DLSS" : "HLX FSR 4";
+				observation.render_width = f.rw;
+				observation.render_height = f.rh;
+				observation.output_width = f.ow;
+				observation.output_height = f.oh;
+				observation.preset = s->performance_target == std::pair<uint32_t, uint32_t>{f.ow, f.oh} ? s->performance_preset : "Unknown";
+			} else if (Prof().taa || s->use_hlx == 1) {
+				// A skipped temporal pass cannot be reported as a successful game upscale.
+				observation.upscaler = Prof().taa_raster ? "Spatial fallback" : "Unknown";
+				observation.preset = "Unknown";
+			}
+			Common::Performance::Observe(std::move(observation));
 			Release(*s, ok); // not ok: the unpack is skipped and the title's own FSR3 output stays
 			if (StallWanted() && s->id > 8) { // a frame 8 boundaries back has long resumed: its whole stall
 				static double   sum_stall = 0, max_stall = 0;
@@ -2077,6 +2099,8 @@ void Worker() {
 			}
 			continue;
 		}
+		if (mode == Mode::Passthrough) s->performance.upscaler = "Passthrough";
+		Common::Performance::Observe(s->performance);
 		Release(*s, mode == Mode::Roundtrip || mode == Mode::Passthrough);
 	}
 }
@@ -3823,6 +3847,25 @@ bool TakeBoundary(uint64_t packet, uint64_t shader, bool compute_ring, Boundary*
 	}
 	auto s = *it;
 	g_pending.erase(it);
+	if (RuntimeVerified()) {
+		auto& p = s->performance;
+		p.upscaler = Prof().taa ? "Game TAA" : "Game FSR 3.1";
+		p.render_width = s->Field<uint32_t>(0x6f8);
+		p.render_height = s->Field<uint32_t>(0x6fc);
+		p.output_width = s->Field<uint32_t>(0x700);
+		p.output_height = s->Field<uint32_t>(0x704);
+		const auto settings = CurrentSettings();
+		const auto expected = LevelSize(settings.level);
+		s->performance_target = TargetSize();
+		if (settings.level >= 0 && expected.first == p.render_width && expected.second == p.render_height) {
+			s->performance_preset = PresetName(settings.preset);
+			if (s->performance_target.first == p.output_width && s->performance_target.second == p.output_height) {
+				p.preset = s->performance_preset;
+			}
+		} else {
+			p.preset = "Unknown";
+		}
+	}
 	const Mode mode = GetMode();
 	if (CompositeRouteWanted() && s->stage != 5) {
 		// The game post-processes at render size. Leave an exposed, jittered scene
@@ -3856,6 +3899,7 @@ bool TakeBoundary(uint64_t packet, uint64_t shader, bool compute_ring, Boundary*
 	                     : mode == Mode::Hlx                                    ? Decide(*s)
 	                                                                            : (DeviceReady(*s) && ActiveWindow());
 	if (!upscale && PoolBlocksFsr3()) {
+		s->performance.upscaler = "Spatial fallback";
 		// FSR3's working memory is released (or moving back): its accumulate pass must not run. Nothing is inserted
 		// but the pass's removal (and the guide copies when frame generation wants them).
 		Decide(*s);
@@ -3870,6 +3914,7 @@ bool TakeBoundary(uint64_t packet, uint64_t shader, bool compute_ring, Boundary*
 			FgEmit(*s, static_cast<uint32_t>(s->id % kSlots), table, compute_ring, out->before);
 		}
 		StandIn(*s, static_cast<uint32_t>(s->id % kSlots), table, compute_ring, out->before);
+		Common::Performance::Observe(s->performance);
 		if (fg) {
 			if (s->fg_set >= 0) {
 				s->gated          = false;
@@ -3880,6 +3925,7 @@ bool TakeBoundary(uint64_t packet, uint64_t shader, bool compute_ring, Boundary*
 		return true;
 	}
 	if (!upscale && !fg) {
+		Common::Performance::Observe(s->performance);
 		return false;
 	}
 	// Every resource the mode needs must match the staging layout chosen at init (sizes and formats).
@@ -3915,6 +3961,7 @@ bool TakeBoundary(uint64_t packet, uint64_t shader, bool compute_ring, Boundary*
 	}
 	// Frame generation's guide copies alone: no gate (the title's FSR3 output stays as it is), only the EOP.
 	auto guides_only = [&]() {
+		Common::Performance::Observe(s->performance);
 		if (s->fg_set < 0) {
 			return false;
 		}

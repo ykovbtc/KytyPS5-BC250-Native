@@ -3,6 +3,9 @@
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
 #include "common/hostStats.h"
+#include "common/performanceMetrics.h"
+#include "graphics/native_gpu/nativeUpscaler.h"
+#include <cstdlib>
 #include "graphics/host_gpu/graphicContext.h"
 #include "imgui.h"
 #include "kernel/memory.h"
@@ -133,6 +136,7 @@ struct Snapshot {
 	uint64_t                            shader_compile_peak_ns  = 0;
 	uint64_t                            pipeline_create_peak_ns = 0;
 	Common::HostStats                   host;
+	Common::Performance::Sample performance;
 	std::optional<uint64_t>             device_memory;
 	uint64_t                            device_budget = 0;
 	std::array<GraphicContext::HeapUsage, VK_MAX_MEMORY_HEAPS> heaps {};
@@ -146,7 +150,7 @@ struct Snapshot {
 std::mutex            g_frame_mutex;
 FrameWindow           g_frames;
 std::atomic<uint64_t> g_generation {0};
-std::atomic<bool>     g_details {false};
+std::atomic<int>      g_visible_mode {1};
 std::atomic<uint64_t> g_revision {0};
 
 std::mutex                  g_host_mutex;
@@ -161,6 +165,8 @@ void SetOverlayEnabled(bool enabled) {
 		if (enabled) {
 			std::scoped_lock frame_lock(g_frame_mutex);
 			g_frames = {};
+			std::lock_guard metrics_lock(Common::Performance::mutex);
+			Common::Performance::metrics.ResetFrames(Clock::now());
 			g_generation.fetch_add(1, std::memory_order_release);
 		}
 		Common::DebugCounters::SetEnabled(enabled);
@@ -499,9 +505,77 @@ void Refresh(Snapshot& shown, const GraphicContext& graphics, Clock::time_point 
 			shown.device_budget += heap.budget;
 		}
 	}
-	if (g_details.load(std::memory_order_acquire)) {
+	if (g_visible_mode.load(std::memory_order_acquire) == 2) {
 		shown.guest_memory = LibKernel::Memory::GetDebugStats();
 	}
+}
+
+bool ExternalFrameGeneration() {
+	const char* enabled = std::getenv("ENABLE_MAKO");
+	const char* disabled = std::getenv("DISABLE_MAKO");
+	return enabled != nullptr && enabled[0] != '0' && enabled[0] != '\0' &&
+	       (disabled == nullptr || disabled[0] == '0' || disabled[0] == '\0');
+}
+
+void DrawPerformance(const Snapshot& shown, vk::Extent2D extent, float scale) {
+	const auto& metrics = shown.performance;
+	const auto& host = shown.host;
+	const auto temperature = [](const std::optional<double>& value) {
+		return value ? Fmt("%.0f°C", *value) : std::string("N/A");
+	};
+	const bool external = ExternalFrameGeneration();
+	const std::string low = metrics.low_fps ? Fmt("%.1f", *metrics.low_fps) : "collecting";
+	const std::string presented = external ? "N/A" : Fmt("%.1f", metrics.presented_fps);
+	const float max_width = std::max(180.0f, static_cast<float>(extent.width) - 44.0f * scale);
+	ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + max_width);
+	ImGui::Text("FPS %.1f   1%% low %s   Presented FPS %s", shown.fps, low.c_str(), presented.c_str());
+	std::string vram = "N/A";
+	if (host.vram_used && host.vram_total.value_or(0) > 0) {
+		vram = Fmt("%.0f / %.0f MiB (%.0f%%)", *host.vram_used / 1048576.0,
+		           *host.vram_total / 1048576.0, 100.0 * *host.vram_used / *host.vram_total);
+	}
+	ImGui::Text("GPU %s   VRAM %s   %s", Percent(host.gpu_percent).c_str(), vram.c_str(),
+	            temperature(host.gpu_temperature).c_str());
+	ImGui::Text("CPU %s   %s", Percent(host.system_cpu_percent).c_str(), temperature(host.cpu_temperature).c_str());
+	std::string row;
+	unsigned columns = 0;
+	for (const auto& cpu: host.cpu_usage) {
+		const auto cell = Fmt("CPU%u %s", cpu.id, Percent(cpu.percent).c_str());
+		const auto combined = row.empty() ? cell : row + "  " + cell;
+		if (!row.empty() && (columns == Common::Performance::CpuColumns || ImGui::CalcTextSize(combined.c_str()).x > max_width)) {
+			ImGui::TextUnformatted(row.c_str());
+			row.clear();
+			columns = 0;
+		}
+		if (!row.empty()) row += "  ";
+		row += cell;
+		++columns;
+	}
+	if (!row.empty()) ImGui::TextUnformatted(row.c_str());
+	const auto& rendering = metrics.rendering;
+	ImGui::Text("Upscaler %s   Preset %s", rendering.upscaler.c_str(), rendering.preset.c_str());
+	const auto size = [](uint32_t w, uint32_t h) {
+		return w && h ? Fmt("%u×%u", w, h) : std::string("Unknown");
+	};
+	std::string resolution = size(rendering.render_width, rendering.render_height);
+	if (rendering.output_width != rendering.render_width || rendering.output_height != rendering.render_height ||
+	    rendering.output_width == 0) {
+		resolution += " → " + size(rendering.output_width, rendering.output_height);
+	}
+	if (extent.width != rendering.output_width || extent.height != rendering.output_height) {
+		resolution += " → " + size(extent.width, extent.height);
+	}
+	ImGui::Text("Resolution %s", resolution.c_str());
+	if (external) {
+		ImGui::TextUnformatted("Frame Generation Lossless Scaling — activity unverified");
+	} else if (metrics.generated) {
+		ImGui::TextUnformatted("Frame Generation On — FSR 3.1");
+	} else {
+		const auto reason = NativeUpscaler::FrameGenStatus();
+		ImGui::Text("Frame Generation Off%s%s", reason.empty() ? "" : " — ", reason.c_str());
+	}
+	ImGui::Text("Session time %s", Common::Performance::SessionTime(metrics.session_seconds).c_str());
+	ImGui::PopTextWrapPos();
 }
 
 void DrawCompact(const Snapshot& shown) {
@@ -745,12 +819,24 @@ void DrawMemoryAndIo(const Snapshot& shown) {
 
 } // namespace
 
+void PerformanceOverlayStartSession() {
+	std::scoped_lock lock(g_frame_mutex);
+	g_frames = {};
+	Common::Performance::StartSession();
+	g_generation.fetch_add(1, std::memory_order_release);
+	g_revision.fetch_add(1, std::memory_order_acq_rel);
+}
+
 void PerformanceOverlayRecordFlip(uint32_t guest_width, uint32_t guest_height) noexcept {
 	if (!Common::DebugCounters::Enabled()) {
 		return;
 	}
 	std::scoped_lock lock(g_frame_mutex);
 	g_frames.Record(Clock::now(), ReadCounters());
+	{
+		std::lock_guard lock(Common::Performance::mutex);
+		Common::Performance::metrics.Flip(Clock::now());
+	}
 	g_frames.guest_width  = guest_width;
 	g_frames.guest_height = guest_height;
 }
@@ -765,27 +851,17 @@ void TogglePerformanceOverlay() noexcept {
 }
 
 void TogglePerformanceOverlayDetails() noexcept {
-	if (Common::DebugCounters::Enabled()) {
-		g_details.store(!g_details.load(std::memory_order_acquire), std::memory_order_release);
-	} else {
-		g_details.store(true, std::memory_order_release);
-		SetOverlayEnabled(true);
-	}
-	g_revision.fetch_add(1, std::memory_order_acq_rel);
+	SetPerformanceOverlayMode(Common::Performance::DetailsMode(PerformanceOverlayMode()));
 }
 
 int PerformanceOverlayMode() noexcept {
-	if (!Common::DebugCounters::Enabled()) {
-		return 0;
-	}
-	return g_details.load(std::memory_order_acquire) ? 2 : 1;
+	return Common::DebugCounters::Enabled() ? g_visible_mode.load(std::memory_order_acquire) : 0;
 }
 
 void SetPerformanceOverlayMode(int mode) noexcept {
-	g_details.store(mode == 2, std::memory_order_release);
-	if ((mode != 0) != Common::DebugCounters::Enabled()) {
-		SetOverlayEnabled(mode != 0);
-	}
+	if (!Common::Performance::ValidMode(mode)) return;
+	if (mode != 0) g_visible_mode.store(mode, std::memory_order_release);
+	if ((mode != 0) != Common::DebugCounters::Enabled()) SetOverlayEnabled(mode != 0);
 	g_revision.fetch_add(1, std::memory_order_acq_rel);
 }
 
@@ -801,16 +877,17 @@ float DrawPerformanceOverlay(const GraphicContext& graphics, vk::Extent2D extent
 
 	static Snapshot shown;
 	static uint64_t shown_generation = 0;
-	static bool     shown_details    = false;
+	static int      shown_mode       = 0;
 	const auto      generation       = g_generation.load(std::memory_order_acquire);
-	const bool      details          = g_details.load(std::memory_order_acquire);
+	const int       mode             = g_visible_mode.load(std::memory_order_acquire);
+	const bool      details          = mode == 2;
 	const auto      now              = Clock::now();
 	if (generation != shown_generation) {
 		shown            = {};
 		shown_generation = generation;
 	}
 	if (shown.sample_time == Clock::time_point {} || now - shown.sample_time >= REFRESH_INTERVAL ||
-	    details != shown_details) {
+	    mode != shown_mode) {
 		{
 			std::scoped_lock lock(g_frame_mutex);
 			auto&            frames = g_frames;
@@ -840,7 +917,7 @@ float DrawPerformanceOverlay(const GraphicContext& graphics, vk::Extent2D extent
 			frames.window_start = now;
 		}
 		shown.hitch_activity = HitchActivity(shown.last_hitch);
-		shown_details = details;
+		shown_mode = mode;
 		if (shown.history_count > 0) {
 			auto       sorted     = shown.history;
 			const auto end        = sorted.begin() + shown.history_count;
@@ -849,6 +926,10 @@ float DrawPerformanceOverlay(const GraphicContext& graphics, vk::Extent2D extent
 			shown.low_fps = *percentile > 0.0f ? 1000.0 / *percentile : 0.0;
 		}
 		Refresh(shown, graphics, now, generation);
+		{
+			std::lock_guard lock(Common::Performance::mutex);
+			shown.performance = Common::Performance::metrics.Read(now);
+		}
 	}
 
 	const float scale = std::clamp(std::min(static_cast<float>(extent.width) / 1920.0f,
@@ -868,37 +949,41 @@ float DrawPerformanceOverlay(const GraphicContext& graphics, vk::Extent2D extent
 	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {8.0f * scale, 2.0f * scale});
 	ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, {4.0f * scale, 1.0f * scale});
 	if (ImGui::Begin("##kyty_performance_overlay", nullptr, FLAGS)) {
-		if (shown.fps > 0.0) {
-			ImGui::TextColored(Color(FrameTimeColor(shown.frame_ms)), "%.1f FPS   %.1f ms",
-			                   shown.fps, shown.frame_ms);
-		} else if (shown.stalled_s >= 1.0) {
-			ImGui::TextColored(Color(BAD), "No frames for %.0f s", shown.stalled_s);
+		if (mode == 3) {
+			DrawPerformance(shown, extent, scale);
 		} else {
-			ImGui::TextDisabled("Waiting for frames");
-		}
-		DrawFrameGraph(shown.history, shown.history_count, (details ? 330.0f : 260.0f) * scale,
-		               46.0f * scale);
-		if (details) {
-			// Three columns keep the detailed panel within a 720p window.
-			if (ImGui::BeginTable("##details", 3, TABLE_FLAGS)) {
-				ImGui::TableNextRow();
-				ImGui::TableNextColumn();
-				DrawFramesAndCpu(shown, extent);
-				ImGui::TableNextColumn();
-				DrawGpu(shown, graphics);
-				ImGui::TableNextColumn();
-				DrawMemoryAndIo(shown);
-				ImGui::EndTable();
+			if (shown.fps > 0.0) {
+				ImGui::TextColored(Color(FrameTimeColor(shown.frame_ms)), "%.1f FPS   %.1f ms",
+				                   shown.fps, shown.frame_ms);
+			} else if (shown.stalled_s >= 1.0) {
+				ImGui::TextColored(Color(BAD), "No frames for %.0f s", shown.stalled_s);
+			} else {
+				ImGui::TextDisabled("Waiting for frames");
 			}
-		} else {
-			DrawCompact(shown);
-		}
+			DrawFrameGraph(shown.history, shown.history_count, (details ? 330.0f : 260.0f) * scale,
+			               46.0f * scale);
+			if (details) {
+				// Three columns keep the detailed panel within a 720p window.
+				if (ImGui::BeginTable("##details", 3, TABLE_FLAGS)) {
+					ImGui::TableNextRow();
+					ImGui::TableNextColumn();
+					DrawFramesAndCpu(shown, extent);
+					ImGui::TableNextColumn();
+					DrawGpu(shown, graphics);
+					ImGui::TableNextColumn();
+					DrawMemoryAndIo(shown);
+					ImGui::EndTable();
+				}
+			} else {
+				DrawCompact(shown);
+			}
 #if defined(__APPLE__)
-		ImGui::TextDisabled(details ? "Cmd+Shift+P compact   Cmd+P hide"
-		                            : "Cmd+Shift+P details   Cmd+P hide");
+			ImGui::TextDisabled(details ? "Cmd+Shift+P compact   Cmd+P hide"
+			                            : "Cmd+Shift+P details   Cmd+P hide");
 #else
-		ImGui::TextDisabled(details ? "Shift+F2 compact   F2 hide" : "Shift+F2 details   F2 hide");
+			ImGui::TextDisabled(details ? "Shift+F2 compact   F2 hide" : "Shift+F2 details   F2 hide");
 #endif
+		}
 	}
 	const float bottom = ImGui::GetWindowPos().y + ImGui::GetWindowSize().y;
 	ImGui::End();

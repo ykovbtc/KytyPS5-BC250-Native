@@ -1,6 +1,7 @@
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/debugCounters.h"
+#include "common/performanceMetrics.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
@@ -324,7 +325,7 @@ public:
 	void     RecordPresentCommands(CommandBuffer& command, Presenter::Frame* source,
 	                               const Presenter::Layer& overlay, bool draw_system_overlay);
 	uint64_t Submit(CommandScheduler& scheduler);
-	[[nodiscard]] Status Present();
+	[[nodiscard]] Status Present(bool& count_frame, bool generated);
 
 	[[nodiscard]] uint32_t ImageCount() const noexcept {
 		return static_cast<uint32_t>(m_images.size());
@@ -422,7 +423,7 @@ struct Presenter::Impl {
 		cache.UpdateImage(image_id);
 		return image;
 	}
-	void Present();
+	void Present(bool count_frame = false, bool generated = false);
 
 	// Frame generation 2x (window/frameGen.h): a flip shows the generated frame and leaves its real frame
 	// here for the next VideoOut tick (PresentPendingReal), one vblank later.
@@ -441,7 +442,7 @@ struct Presenter::Impl {
 	bool EnqueueDynamic(Frame& real);
 	bool DynamicTick();
 	void FlushDynamic();
-	void ShowFrame(Frame* f); // makes `f` the main layer and presents it
+	void ShowFrame(Frame* f, bool generated = false); // makes `f` the main layer and presents it
 	void Unref(Frame* f);     // back to the pool unless queued or shown
 	bool Queued(const Frame* f) const {
 		for (const auto& r: fg_reals) {
@@ -1071,7 +1072,7 @@ uint64_t Swapchain::Submit(CommandScheduler& scheduler) {
 	return tick;
 }
 
-Swapchain::Status Swapchain::Present() {
+Swapchain::Status Swapchain::Present(bool& count_frame, bool generated) {
 	EXIT_IF(m_image_index >= m_render_complete.size());
 	const auto         ready = m_render_complete[m_image_index];
 	vk::PresentInfoKHR present {};
@@ -1087,6 +1088,12 @@ Swapchain::Status Swapchain::Present() {
 		Common::LockGuard lock(m_window.graphic_ctx.queue_mutex);
 		result = m_window.graphic_ctx.queue.presentKHR(&present);
 	}
+	if (count_frame && PerformanceOverlayEnabled() &&
+	    (result == vk::Result::eSuccess || result == vk::Result::eSuboptimalKHR)) {
+		std::lock_guard lock(Common::Performance::mutex);
+		Common::Performance::metrics.Present(generated);
+	}
+	if (result == vk::Result::eSuccess || result == vk::Result::eSuboptimalKHR) count_frame = false;
 	switch (result) {
 		case vk::Result::eSuccess: break;
 		case vk::Result::eSuboptimalKHR:
@@ -1237,7 +1244,7 @@ void Presenter::Present(std::span<const Layer> layers) {
 		}
 		previous = layer;
 	}
-	m_impl->Present();
+	m_impl->Present(std::any_of(layers.begin(), layers.end(), [](const Layer& layer) { return layer.bus == 0 && layer.frame != nullptr; }));
 }
 
 void Presenter::SetFrameGuides(Frame& frame, uint64_t boundary) {
@@ -1260,7 +1267,7 @@ void Presenter::ClearLayer(int bus) {
 	}
 }
 
-void Presenter::Impl::Present() {
+void Presenter::Impl::Present(bool count_frame, bool generated) {
 	KYTY_PROFILER_FUNCTION();
 
 	const auto overlay_visual = GetSystemOverlayVisualState();
@@ -1298,7 +1305,8 @@ void Presenter::Impl::Present() {
 				layer.frame->present_tick = tick;
 			}
 		}
-		status = swapchain.Present();
+		count_frame = count_frame && main_frame != nullptr;
+		status = swapchain.Present(count_frame, generated);
 		if (status != Swapchain::Status::Success) {
 			RecoverSwapchain(status);
 			continue;
@@ -1339,13 +1347,13 @@ void Presenter::Impl::Unref(Frame* f) {
 	}
 }
 
-void Presenter::Impl::ShowFrame(Frame* f) {
+void Presenter::Impl::ShowFrame(Frame* f, bool generated) {
 	Frame* old = layers[0].frame;
 	layers[0]  = {f, 0, false};
 	if (old != f) {
 		Unref(old);
 	}
-	Present();
+	Present(true, generated);
 }
 
 // Leaves dynamic mode: the newest queued frame is shown, the rest go back (with their guides).
@@ -1502,7 +1510,7 @@ bool Presenter::Impl::DynamicTick() {
 		}
 	}
 	if (shown) {
-		ShowFrame(generated);
+		ShowFrame(generated, true);
 		CountFgPresent(true);
 		return true;
 	}
@@ -1548,7 +1556,7 @@ bool Presenter::Impl::PresentPendingReal() {
 	if (fg_real == nullptr) {
 		if (fg_repeat && layers[0].frame != nullptr) {
 			fg_repeat = false;
-			Present();
+			Present(true);
 			return true;
 		}
 		fg_repeat = false;
@@ -1561,7 +1569,7 @@ bool Presenter::Impl::PresentPendingReal() {
 	}
 	main    = {fg_real, 0, false};
 	fg_real = nullptr;
-	Present();
+	Present(true);
 	return true;
 }
 
@@ -1628,7 +1636,7 @@ bool Presenter::Impl::TryFrameGen(Frame& real) {
 		frames.Release(main.frame);
 	}
 	main = {generated, 0, false};
-	Present();
+	Present(true, true);
 	CountFgPresent(true);
 	fg_real = &real;
 	return true;

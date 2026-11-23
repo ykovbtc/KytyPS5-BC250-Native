@@ -1,3 +1,5 @@
+#include "common/performanceMetrics.h"
+
 #include "graphics/presentation/gameMenu.h"
 
 #include "graphics/native_gpu/nativeShadow.h"
@@ -80,12 +82,13 @@ const char* MonitoringLabel(int mode) {
 	switch (mode) {
 		case 1: return "FPS";
 		case 2: return "Detailed";
+		case 3: return "Performance";
 		default: return "Off";
 	}
 }
 
 void StepMonitoring(int step) {
-	SetPerformanceOverlayMode((PerformanceOverlayMode() + step + 3) % 3);
+	SetPerformanceOverlayMode(Common::Performance::StepMode(PerformanceOverlayMode(), step));
 	g_revision.fetch_add(1, std::memory_order_acq_rel);
 }
 
