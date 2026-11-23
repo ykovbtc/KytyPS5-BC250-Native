@@ -34,7 +34,23 @@ internal static class Verification
             Check(Game.Scan(settings).Count == 1, "Nested library scan deduplicates installs");
             settings.ExcludedGames.Add(eboot); Check(Game.Scan(settings).Count == 0, "Excluded games remain excluded");
             Check(KytyBridge.Options.Select(o => o.Id).Distinct().Count() == KytyBridge.Options.Count, "All native setting IDs are unique");
-            Check(KytyBridge.Options.Count == 77 && KytyBridge.Options.Any(o => o.Id == "upscale_preset"), "Complete native settings manifest including upscaling and HDMI output");
+            Check(KytyBridge.Options.Count == 78 && KytyBridge.Options.Any(o => o.Id == "max_game_fps"), "Complete native settings manifest including frame pacing");
+            Check(!KytyBridge.Build(eboot, game.TitleId).Arguments.Contains("--max-game-fps"), "Frame pacing defaults to Off");
+            KytyBridge.Save(null, null, new Dictionary<string, string> { ["max_game_fps"] = "55" });
+            void CheckCap(string expected)
+            {
+                var args = KytyBridge.Build(eboot, game.TitleId).Arguments;
+                var cap = args.IndexOf("--max-game-fps");
+                Check(cap >= 0 && args[cap + 1] == expected && args[args.IndexOf("--vblank-frequency") + 1] == "60",
+                    "Game cap " + expected + " with a 60 Hz virtual display");
+            }
+            CheckCap("55");
+            KytyBridge.Save(game.TitleId, eboot, new Dictionary<string, string> { ["max_game_fps"] = "48" });
+            CheckCap("48");
+            KytyBridge.Save(game.TitleId, eboot, new Dictionary<string, string> { ["max_game_fps"] = "0" });
+            Check(!KytyBridge.Build(eboot, game.TitleId).Arguments.Contains("--max-game-fps"), "Per-game Off overrides a global limit");
+            Check(new[] { "-1", "361", "48.5", "", "fast" }.All(v => !KytyBridge.TryGameFps(v, out _)), "Invalid FPS limits are rejected");
+            KytyBridge.Save(null, null, new Dictionary<string, string>());
             var session = Environment.GetEnvironmentVariable("PS5_MINIMAL_SESSION");
             try
             {

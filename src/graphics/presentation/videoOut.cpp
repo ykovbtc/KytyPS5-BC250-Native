@@ -18,6 +18,7 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/native_gpu/nativeShadow.h"
 #include "graphics/presentation/performanceOverlay.h"
+#include "graphics/presentation/gameFramePacer.h"
 #include "graphics/presentation/presenter.h"
 #include "graphics/native_gpu/nativeUpscaler.h"
 #include "graphics/presentation/renderDoc.h"
@@ -361,6 +362,7 @@ private:
 	const uint32_t       m_width;
 	const uint32_t       m_height;
 	Common::Mutex        m_mutex;
+	GameFramePacer       m_game_pacer {Config::GetMaxGameFps()}; // guarded by m_mutex
 	Common::CondVar      m_submit_slot_cond_var;
 	Common::CondVar      m_done_cond_var;
 	std::list<Request>   m_requests;
@@ -871,6 +873,10 @@ VideoOutDriver::Impl& VideoOutDriver::State() noexcept {
 
 VideoOutDriver& VideoOutInit(uint32_t width, uint32_t height, Graphics::Presenter& presenter) {
 	EXIT_IF(g_video_out_driver != nullptr);
+	if (Config::GetMaxGameFps() != 0) {
+		std::fprintf(stderr, "Frame pacing: maximum %u game FPS, virtual display %u Hz\n",
+		             Config::GetMaxGameFps(), Config::GetVblankFrequency());
+	}
 	g_video_out_driver = std::make_unique<VideoOutDriver>(width, height, presenter);
 	return *g_video_out_driver;
 }
@@ -1413,6 +1419,9 @@ void FlipQueue::Cancel(VideoOutConfig& cfg) {
 		}
 	}
 	m_side_shown.erase(&cfg);
+	if (cfg.bus == VIDEO_OUT_BUS_TYPE_MAIN) {
+		m_game_pacer.Reset();
+	}
 	SignalDoneLocked();
 	m_submit_slot_cond_var.SignalAll();
 	m_mutex.Unlock();
@@ -1743,6 +1752,8 @@ bool FlipQueue::Flip() {
 	// A direct request is not Kyty's to present (TryDirect sent it or will), but it still holds back
 	// the newer flips of its port until the display completed it (OlderPendingOnPort).
 	uint64_t group = 0;
+	const auto pace_time = m_game_pacer.Enabled() ? GameFramePacer::Clock::now() : GameFramePacer::Clock::time_point {};
+	const bool hold_main = !m_game_pacer.Due(pace_time);
 	for (const auto& owner: m_requests) {
 		if (owner.group != owner.id || owner.direct) {
 			continue;
@@ -1750,8 +1761,9 @@ bool FlipQueue::Flip() {
 		const uint64_t candidate = owner.id;
 		if (std::any_of(m_cpu_requests.begin(), m_cpu_requests.end(),
 		                [candidate](const auto& r) { return r.group == candidate; }) ||
-		    std::any_of(m_requests.begin(), m_requests.end(), [this, candidate](const auto& r) {
-			    return r.group == candidate && (r.state != RequestState::Ready || OlderPendingOnPort(r));
+		    std::any_of(m_requests.begin(), m_requests.end(), [this, candidate, hold_main](const auto& r) {
+			    return r.group == candidate && (r.state != RequestState::Ready || OlderPendingOnPort(r) ||
+			                                    (hold_main && r.cfg->bus == VIDEO_OUT_BUS_TYPE_MAIN));
 		    })) {
 			continue;
 		}
@@ -1825,6 +1837,9 @@ bool FlipQueue::Flip() {
 		}
 		auto&     r        = *it;
 		const int previous = r.cfg->flip_status.currentBuffer;
+		if (m_game_pacer.Enabled() && r.cfg->bus == VIDEO_OUT_BUS_TYPE_MAIN) {
+			m_game_pacer.Advance(pace_time);
+		}
 		r.cfg->flip_vblank = r.cfg->vblank_status.count;
 		r.cfg->flip_status.count++;
 		r.cfg->flip_status.processTime              = LibKernel::KernelGetProcessTime();
@@ -2000,6 +2015,10 @@ void FlipQueue::PumpDirectLocked(VideoOutConfig& cfg, double now) {
 			it = CompleteDirectLocked(it, now);
 			continue;
 		}
+		const auto pace_time = m_game_pacer.Enabled() ? GameFramePacer::Clock::now() : GameFramePacer::Clock::time_point {};
+		if (!m_direct_failed && !m_game_pacer.Due(pace_time)) {
+			break; // Keep the buffer pending until a later watchdog tick or display event.
+		}
 		r.state           = RequestState::Presenting;
 		r.direct_sent     = now;
 		r.direct_deadline = now;
@@ -2026,6 +2045,9 @@ void FlipQueue::PumpDirectLocked(VideoOutConfig& cfg, double now) {
 			continue;
 		}
 		cfg.direct_last_target = target != 0 ? target : last_msc + 1;
+		if (m_game_pacer.Enabled()) {
+			m_game_pacer.Advance(pace_time);
+		}
 		// 250 ms after the vblank it is due at (counted at 30 Hz, so a 120 Hz output is not shorter).
 		r.direct_deadline = now + 0.25 + static_cast<double>(target > last_msc ? target - last_msc : 1) / 30.0;
 		auto& hold        = cfg.holds[r.index];
@@ -2273,7 +2295,8 @@ void FlipQueue::DirectWatchdog(double now) {
 					++it;
 				}
 			}
-			// The rest, once the requests before them have reached the display.
+		}
+		if (expired || m_game_pacer.Enabled()) {
 			PumpDirectLocked(cfg, now);
 		}
 		// A buffer off the screen whose IdleNotify has not come within 1 s: the display let it go

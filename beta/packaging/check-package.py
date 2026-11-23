@@ -49,6 +49,9 @@ with tempfile.TemporaryDirectory(prefix='kyty-beta-package-') as temp:
         check('Executable: '+str(bundle/'emulator'/binary) in r.stdout, name + ' selects ' + binary)
         check(all(s in r.stdout for s in contains) and all(s not in r.stdout for s in absent), name + ' settings propagate')
     route({}, 'Native', 'kyty_emulator_native')
+    cap_args = ['--game', str(temp/'missing/eboot.bin'), '--vblank-frequency', '60', '--max-game-fps', '48']
+    cap_output = ['Argument: --vblank-frequency\nArgument: 60\n', 'Argument: --max-game-fps\nArgument: 48\n']
+    route({}, 'Native with a 48 FPS cap', 'kyty_emulator_native', cap_output, args=cap_args)
     # Reproduce Gamescope's display property independently of the host compositor.
     test_bin = temp/'bin'
     test_bin.mkdir()
@@ -77,10 +80,14 @@ with tempfile.TemporaryDirectory(prefix='kyty-beta-package-') as temp:
     route(dict(steam, KYTYPS5_LABWC_CONFIG='rc.xml', KYTYPS5_HDR_MODE='0'), 'Labwc saved HDR Off', 'kyty_emulator_native', absent=hdr_arg)
     route(steam, 'Gamescope non-game command', 'kyty_emulator_native', absent=hdr_arg, args=['--help'])
     route({'KYTY_NATIVE_GPU_PM4_MODE':'fast'}, 'Legacy Fast', 'kyty_emulator_fast')
+    legacy = subprocess.run([str(bundle/'selector-relocated.sh'), *cap_args], env=dict(env, KYTY_NATIVE_GPU_PM4_MODE='fast'),
+                            text=True, capture_output=True)
+    check(legacy.returncode == 78 and 'cannot enforce Maximum game FPS' in legacy.stderr, 'Legacy Fast reports unsupported cap')
     for adapter,binary in [('fsr3_description_v1','kyty_emulator_auto_upscaler'),('taa_paths_v1','kyty_emulator_launcher_taa_fg')]:
         profile.write_text(json.dumps({'capabilities':{'upscaler':{'state':'available'},'frame_generation':{'state':'available'}},'runtime':{'adapter':adapter}}))
         extra={'KYTY_NATIVE_UPSCALER_BUILD':'1','KYTY_UPSCALER':'game','KYTY_FRAMEGEN':'fsr3'}
         route(extra, adapter, binary, ['KYTY_FRAMEGEN=fsr3'])
+        route(extra, adapter + ' with a cap', binary, cap_output, args=cap_args)
     route(dict(extra,KYTY_BC250_TITLE_ID='PPSA01341',KYTY_DEMONS_SCREAM_ASSERT_RECOVERY='1'), 'Recovery after TAA selection', 'kyty_emulator_launcher_taa_fg', ['KYTY_DEMONS_SCREAM_ASSERT_RECOVERY=1'])
     route(dict(extra,KYTY_BC250_TITLE_ID='PPSA01341',KYTY_DEMONS_SCREAM_ASSERT_RECOVERY='0'), 'Recovery Off', 'kyty_emulator_launcher_taa_fg', absent=['KYTY_DEMONS_SCREAM_ASSERT_RECOVERY=1'])
     tested = next(p for p in (bundle/'upscalers/title-profiles').glob('PPSA03671-*.json') if not p.name.endswith('.calibration.json'))
@@ -114,9 +121,12 @@ with tempfile.TemporaryDirectory(prefix='kyty-beta-package-') as temp:
           args=['--addcont-dir', str(dlc.parent.parent)])
     # Read-only validation against the developer's current real archive; never execute the game.
     original = Path('/home/david/astro-helix-framegen-20261110/manual/astro-manual.json')
-    g = json.loads(original.read_text())['game']['location']
-    archive = g['archive'] + '!/' + g['member'].rsplit('/',1)[0]
-    route({'KYTY_NATIVE_UPSCALER_BUILD':'1','KYTY_UPSCALER':'game','KYTY_FRAMEGEN':'fsr3'}, 'Astro exact-SHA relocation', 'kyty_emulator_astro', ['KYTY_ASTRO_DECOUPLE=1'], args=['--game',archive])
+    g = json.loads(original.read_text())['game']['location'] if original.is_file() else None
+    if g and Path(g['archive']).is_file():
+        archive = g['archive'] + '!/' + g['member'].rsplit('/',1)[0]
+        route({'KYTY_NATIVE_UPSCALER_BUILD':'1','KYTY_UPSCALER':'game','KYTY_FRAMEGEN':'fsr3'}, 'Astro exact-SHA relocation', 'kyty_emulator_astro', ['KYTY_ASTRO_DECOUPLE=1'], args=['--game',archive])
+    else:
+        print('SKIP real archive (game or manual profile unavailable): Astro exact-SHA relocation', flush=True)
     # Repeated package mounts must refresh only beta-owned asset/helper links.
     assetlink = temp/'data/runtime/assets'
     assetlink.unlink(); assetlink.symlink_to('/tmp/kyty-previous-mount/assets')
