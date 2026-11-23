@@ -1,5 +1,7 @@
 #include "common/performanceMetrics.h"
 #include "common/hostStatsLinux.h"
+#include "common/performanceDisplay.h"
+#include <limits>
 
 #include <cstdio>
 #include <cstdlib>
@@ -87,5 +89,40 @@ int main() {
 	Check(ParseUnsigned("0") == 0 && ParseUnsigned("123\n") == 123 && !ParseUnsigned("-1") && !ParseUnsigned(" -1") &&
 	      !ParseUnsigned("12watts") && !ParseUnsigned(""), "strict unsigned sensors");
 	Check(Temperature("72000") == 72.0 && !Temperature("999999") && !Temperature("bad"), "temperature validation");
+
+    using namespace Common::PerformanceDisplay;
+    for (const auto thresholds : {std::pair{75., 81.}, {75., 85.}, {60., 75.},
+                                  {94., 98.}, {70., 90.}, {70., 96.}}) {
+        const auto [warn, bad] = thresholds;
+        Check(Classify(warn - 1, warn, bad) == Severity::Good, "below warning");
+        Check(Classify(warn, warn, bad) == Severity::Warning, "at warning");
+        Check(Classify(warn + 1, warn, bad) == Severity::Warning, "above warning");
+        Check(Classify(bad - 1, warn, bad) == Severity::Warning, "below red");
+        Check(Classify(bad, warn, bad) == Severity::Bad, "at red");
+        Check(Classify(bad + 1, warn, bad) == Severity::Bad, "above red");
+        Check(Classify(warn - .51, warn, bad) == Severity::Good &&
+              Classify(warn - .5, warn, bad) == Severity::Warning, "rounded warning");
+        Check(Classify(bad - .51, warn, bad) == Severity::Warning &&
+              Classify(bad - .5, warn, bad) == Severity::Bad, "rounded red");
+    }
+    Check(Classify(std::nullopt, 70, 90) == Severity::Neutral &&
+          Classify(std::numeric_limits<double>::quiet_NaN(), 70, 90) == Severity::Neutral &&
+          Classify(-1., 70, 90) == Severity::Neutral, "unavailable colors");
+    Check(RamPercent(12, 16) == 75. && RamPercent(0, 16) == 0. &&
+          !RamPercent(1, 0) && !RamPercent(std::nullopt, 16) &&
+          !RamPercent(1, std::nullopt) && !RamPercent(17, 16), "RAM validation");
+    std::vector<Common::CpuUsage> cpus{{9, 98.}, {3, 98.}, {0, 60.}, {12, std::nullopt}};
+    Check(BusiestCpu(cpus)->id == 3, "ties choose lowest noncontiguous CPU ID");
+    cpus.erase(cpus.begin() + 1);
+    Check(BusiestCpu(cpus)->id == 9, "removed CPU cannot remain busiest");
+    cpus.push_back({22, 99.});
+    Check(BusiestCpu(cpus)->id == 22, "new CPU can become busiest");
+    Check(!BusiestCpu({}) && !BusiestCpu({{0, std::nullopt}, {1, -1.}, {2, 101.}}),
+          "no valid CPU samples");
+    Check(IsMemoryTemperatureLabel("mem") && IsMemoryTemperatureLabel("Memory") &&
+          IsMemoryTemperatureLabel("VRAM") && IsMemoryTemperatureLabel("memory junction") &&
+          !IsMemoryTemperatureLabel("edge") && !IsMemoryTemperatureLabel("junction") &&
+          !IsMemoryTemperatureLabel("Tdie") && !IsMemoryTemperatureLabel(""),
+          "only explicit memory temperature labels");
 	std::puts("Performance metrics tests passed");
 }
