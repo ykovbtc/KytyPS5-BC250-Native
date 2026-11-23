@@ -168,6 +168,15 @@ internal sealed partial class ConsoleWindow
                     Navigate(PadAction.Down);
                 }
             }
+            ShowSettings(Selected, "Frame pacing"); await Task.Delay(100);
+            Focus(_rows[0]); Navigate(PadAction.Left); Navigate(PadAction.Accept);
+            Check(_values["max_game_fps"] == "60", "Enabling the cap starts at 60 FPS");
+            Navigate(PadAction.Down); Navigate(PadAction.Left);
+            Check(_values["max_game_fps"] == "59", "One left tap subtracts one FPS");
+            Navigate(PadAction.Right); Navigate(PadAction.Right);
+            Check(_values["max_game_fps"] == "61", "Each right tap adds one FPS");
+            Navigate(PadAction.Up); Navigate(PadAction.Accept); Navigate(PadAction.Accept);
+            Check(_values["max_game_fps"] == "60", "Re-enabling resets the cap to 60 FPS");
             ShowSettings(Selected, "Display"); await Capture("screen-video");
             ShowSettings(null, "Audio"); await Task.Delay(150);
             _preferences.Audio.MusicVolume = 15; _preferences.Audio.SoundsVolume = 65; SaveAudio(); SetCategory(_category); await Task.Delay(100);

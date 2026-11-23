@@ -174,6 +174,7 @@ internal static class KytyBridge
                 .FirstOrDefault(p => PatchMatchesGame(p, gamePath, titleId));
             if (match is not null) result["patch"] = match;
         }
+        result["max_game_fps"] = FpsLimit.Read(result["max_game_fps"]).ToString(System.Globalization.CultureInfo.InvariantCulture);
         return result;
     }
 
@@ -313,10 +314,6 @@ internal static class KytyBridge
         catch (Exception) { return false; }
     }
 
-    public static bool TryGameFps(string value, out int fps) =>
-        int.TryParse(value.Trim(), System.Globalization.NumberStyles.None,
-            System.Globalization.CultureInfo.InvariantCulture, out fps) && fps is >= 0 and <= 360;
-
     public sealed record Command(string Exe, List<string> Arguments, IReadOnlyDictionary<string, string?> Environment);
 
     public static async Task<string[]> ListActivitiesAsync(Game game)
@@ -341,8 +338,8 @@ internal static class KytyBridge
         // An upstream launch must not inherit the frontend\'s BC-250 experiment defaults.
         var cleanUpstream = Value("KYTY_NATIVE_GPU_PM4_MODE") == "upstream";
         var args = new List<string> { "--game", GameArchive.LaunchPath(ebootPath) };
-        if (TryGameFps(Value("max_game_fps"), out var fps) && fps > 0)
-            args.AddRange(["--max-game-fps", fps.ToString(System.Globalization.CultureInfo.InvariantCulture)]);
+        if (Value("max_game_fps") != "0")
+            args.AddRange(["--max-game-fps", Value("max_game_fps")]);
         var env = new Dictionary<string, string?>(StringComparer.Ordinal)
         {
             ["KYTY_NATIVE_GPU_GEM"] = "1",

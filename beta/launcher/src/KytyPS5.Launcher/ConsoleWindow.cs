@@ -85,9 +85,15 @@ internal sealed partial class ConsoleWindow : Window
         Grid.SetColumn(system, 1); footer.Children.Add(system); Grid.SetRow(footer, 2); layout.Children.Add(footer);
         Content = new Viewbox { Stretch = Stretch.Uniform, Child = _scene };
         AddHandler(KeyDownEvent, OnInputKey, RoutingStrategies.Tunnel);
+        AddHandler(KeyUpEvent, (_, e) =>
+        {
+            _fpsKeys.Remove(e.Key);
+            if (_fpsHeldKey == e.Key) StopFpsRepeat();
+        }, RoutingStrategies.Tunnel);
+        Deactivated += (_, _) => { _fpsKeys.Clear(); StopFpsRepeat(); };
         _inputTimer.Tick += (_, _) =>
         {
-            foreach (var action in _pad.Poll(IsActive)) Navigate(action);
+            foreach (var action in _pad.Poll(IsActive, FpsRowFocused)) Navigate(action);
             var status = _pad.Connected ? _pad.Name : "Keyboard ready";
             if (_inputStatus != status) { _inputStatus = status; _connection.Text = status.Length > 28 ? "Controller connected" : status; UpdateHints(); }
             if (Environment.TickCount64 > _clockAt) { _clockAt = Environment.TickCount64 + 15000; _clock.Text = DateTime.Now.ToString("HH:mm"); }
@@ -322,6 +328,20 @@ internal sealed partial class ConsoleWindow : Window
 
     private void OnInputKey(object? sender, KeyEventArgs e)
     {
+        if (e.Key is Key.Left or Key.Right)
+        {
+            bool first = _fpsKeys.Add(e.Key);
+            if (FpsRowFocused)
+            {
+                if (first)
+                {
+                    StartFpsRepeat(e.Key == Key.Left ? -1 : 1);
+                    _fpsHeldKey = e.Key;
+                }
+                e.Handled = true;
+                return;
+            }
+        }
         if (e.Key == Key.F11) { WindowState = WindowState == WindowState.FullScreen ? WindowState.Maximized : WindowState.FullScreen; e.Handled = true; return; }
         var action = e.Key switch { Key.Up => PadAction.Up, Key.Down => PadAction.Down, Key.Left => PadAction.Left, Key.Right => PadAction.Right,
             Key.Enter => PadAction.Accept, Key.Escape => PadAction.Back, Key.F3 => PadAction.Settings,

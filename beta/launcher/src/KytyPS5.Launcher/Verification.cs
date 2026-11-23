@@ -47,9 +47,17 @@ internal static class Verification
             CheckCap("55");
             KytyBridge.Save(game.TitleId, eboot, new Dictionary<string, string> { ["max_game_fps"] = "48" });
             CheckCap("48");
+            foreach (var (stored, expected) in new[] { ("1", "20"), ("360", "120") })
+            {
+                KytyBridge.Save(game.TitleId, eboot, new Dictionary<string, string> { ["max_game_fps"] = stored });
+                Check(KytyBridge.Load(game.TitleId, eboot)["max_game_fps"] == expected, "Launcher clamps saved FPS " + stored);
+                CheckCap(expected);
+            }
             KytyBridge.Save(game.TitleId, eboot, new Dictionary<string, string> { ["max_game_fps"] = "0" });
             Check(!KytyBridge.Build(eboot, game.TitleId).Arguments.Contains("--max-game-fps"), "Per-game Off overrides a global limit");
-            Check(new[] { "-1", "361", "48.5", "", "fast" }.All(v => !KytyBridge.TryGameFps(v, out _)), "Invalid FPS limits are rejected");
+            Check(new[] { "-1", "48.5", "", "fast" }.All(v => FpsLimit.Read(v) == 0), "Malformed FPS values default to Off");
+            Check(FpsLimit.Step(20, -1) == 20 && FpsLimit.Step(120, 1) == 120 && FpsLimit.Step(0, 1) == 0,
+                "FPS buttons stop at both endpoints and while Off");
             KytyBridge.Save(null, null, new Dictionary<string, string>());
             var session = Environment.GetEnvironmentVariable("PS5_MINIMAL_SESSION");
             try
