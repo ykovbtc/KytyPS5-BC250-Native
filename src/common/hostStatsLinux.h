@@ -50,6 +50,28 @@ inline bool IsMemoryTemperatureLabel(std::string label) {
            label == "memory junction";
 }
 
+inline std::optional<uint64_t> ClockMHz(const std::string& hz) {
+	const auto value = ParseUnsigned(hz);
+	if (!value || *value < 1000000) return std::nullopt;
+	return *value / 1000000;
+}
+
+inline std::optional<uint64_t> ActiveClockMHz(std::istream& levels) {
+	std::string line;
+	while (std::getline(levels, line)) {
+		std::istringstream row(line);
+		unsigned level;
+		char colon, active;
+		std::string unit;
+		uint64_t mhz;
+		if (!(row >> level >> colon) || colon != ':') continue;
+		row >> std::ws;
+		if (row.peek() == '-' || !(row >> mhz >> unit >> active) || !mhz || active != '*') continue;
+		if (unit == "Mhz" || unit == "MHz" || unit == "mhz") return mhz;
+	}
+	return std::nullopt;
+}
+
 inline std::optional<double> Temperature(const std::string& text) {
 	const auto value = ParseUnsigned(text);
 	if (!value || *value > 150000) return std::nullopt;

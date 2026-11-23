@@ -7,14 +7,14 @@
 // the title's FSR3 output (copy4_a0).
 // Table: +0x00 source T# (8 dw), +0x20 destination T#, +0x40 S# (bilinear, clamp to last texel),
 // +0x50 {sx, sy, 1/tw, 1/th} (f32: source texels per destination pixel, 1/the source image's own size),
-// +0x60 {ws - 1, hs - 1} (u32: the last texel of the source region).
+// +0x60 {ws - 1, hs - 1} (last source texel), +0x68 {RGB exposure, output alpha} (float).
 // wave64, one 64-lane group per 8x8 destination tile, 1-D local id in v0.
 // user SGPRs: s[0:1] table, s2 destination width, s3 destination height, s4 unused; s5 TGID_X, s6 TGID_Y.
   s_load_dwordx8 s[8:15], s[0:1], 0x0
   s_load_dwordx8 s[16:23], s[0:1], 0x20
   s_load_dwordx4 s[24:27], s[0:1], 0x40
   s_load_dwordx4 s[28:31], s[0:1], 0x50
-  s_load_dwordx2 s[32:33], s[0:1], 0x60
+  s_load_dwordx4 s[32:35], s[0:1], 0x60
   v_and_b32 v1, 7, v0
   v_lshrrev_b32 v2, 3, v0
   v_lshl_add_u32 v1, s5, 3, v1
@@ -174,7 +174,10 @@
   v_max_f32 v4, v4, v50
   v_max_f32 v58, v58, v3
   v_min_f32 v58, v58, v4
-  v_mov_b32 v59, 0 // the title's FSR3 output alpha is 0 (probe 2026-11-08)
+  v_mul_f32 v56, s34, v56
+  v_mul_f32 v57, s34, v57
+  v_mul_f32 v58, s34, v58
+  v_mov_b32 v59, s35
   image_store v[56:59], v[1:2], s[16:23] dmask:0xf dim:SQ_RSRC_IMG_2D unorm
 .Lend:
   s_endpgm

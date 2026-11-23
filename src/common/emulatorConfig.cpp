@@ -145,6 +145,10 @@ uint32_t GetVblankFrequency() {
 	return std::clamp(g_config->vblank_frequency, 30u, 360u);
 }
 
+uint32_t GetMaxGameFps() {
+	return g_config->max_game_fps;
+}
+
 uint32_t GetConsoleLanguage() {
 	return g_config->console_language;
 }

@@ -25,10 +25,12 @@ internal static class KytyBridge
     public static IReadOnlyList<Option> Options { get; } = new List<Option>
     {
         new("resolution", "Rendering resolution", "Display", "2560x1440", ["1920x1080","2560x1440","3840x2160","1280x720"]),
+        new("hdmi_resolution", "HDMI output resolution", "Display", "auto", ["auto","1920x1080","2560x1440","3840x2160"]),
         new("fullscreen", "Borderless fullscreen", "Display", "1", ["1","0"], Boolean:true),
         new("hdr", "HDR10 when available", "Display", "auto", ["auto","1","0"]),
         new("present", "Vulkan present mode", "Display", "Fifo", ["Fifo","Mailbox","Immediate"], "--present-mode"),
         new("vblank", "PS5 virtual refresh (Hz)", "Display", "60", ["30","60","120"], "--vblank-frequency"),
+        new("max_game_fps", "Maximum game FPS", "Frame pacing", "0"),
         new("gpu", "Host GPU index", "Display", "0", ["0","1","2"], "--gpu"),
         new("overlay", "Performance overlay (F2)", "Display", "1", ["1","0"], Boolean:true),
         new("nosplash", "Skip splash and notices", "Display", "1", ["1","0"], Boolean:true),
@@ -311,6 +313,10 @@ internal static class KytyBridge
         catch (Exception) { return false; }
     }
 
+    public static bool TryGameFps(string value, out int fps) =>
+        int.TryParse(value.Trim(), System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out fps) && fps is >= 0 and <= 360;
+
     public sealed record Command(string Exe, List<string> Arguments, IReadOnlyDictionary<string, string?> Environment);
 
     public static async Task<string[]> ListActivitiesAsync(Game game)
@@ -335,6 +341,8 @@ internal static class KytyBridge
         // An upstream launch must not inherit the frontend\'s BC-250 experiment defaults.
         var cleanUpstream = Value("KYTY_NATIVE_GPU_PM4_MODE") == "upstream";
         var args = new List<string> { "--game", GameArchive.LaunchPath(ebootPath) };
+        if (TryGameFps(Value("max_game_fps"), out var fps) && fps > 0)
+            args.AddRange(["--max-game-fps", fps.ToString(System.Globalization.CultureInfo.InvariantCulture)]);
         var env = new Dictionary<string, string?>(StringComparer.Ordinal)
         {
             ["KYTY_NATIVE_GPU_GEM"] = "1",
@@ -381,6 +389,10 @@ internal static class KytyBridge
             args.AddRange(["--screen-width", width.ToString(), "--screen-height", height.ToString()]);
         }
         if (Value("fullscreen") == "1") args.Add("--fullscreen");
+        var hdmi = Value("hdmi_resolution");
+        if (Environment.GetEnvironmentVariable("PS5_MINIMAL_SESSION") == "1" &&
+            hdmi is "1920x1080" or "2560x1440" or "3840x2160")
+            env["KYTYPS5_HDMI_MODE"] = hdmi;
         env["KYTYPS5_HDR_MODE"] = Value("hdr");
         if (Value("hdr") == "1") args.Add("--hdr");
         if (Value("nativeRt") == "1") args.Add("--native-rt");
@@ -520,6 +532,8 @@ internal static class KytyBridge
             env["KYTY_UPSCALER"] = kind;
             env["KYTY_UPSCALE_PRESET"] = preset.Length > 0 ? preset : "dynamic";
             if (hlxOutput.Length > 0) env["KYTY_UPSCALE_OUTPUT"] = hlxOutput;
+            else if (upscaleOutput == "1920x1080" && env.ContainsKey("KYTYPS5_HDMI_MODE"))
+                env["KYTY_UPSCALE_OUTPUT"] = "1080";
         }
         var framegen = Value("framegen");
         if (framegen is "fsr3" or "auto")

@@ -5541,7 +5541,7 @@ private:
 				return true;
 			}
 			auto it = std::upper_bound(m_view_ranges.begin(), m_view_ranges.end(),
-			                           std::make_pair(addr, ~0ull));
+			                           std::pair<uint64_t, uint64_t>{addr, UINT64_MAX});
 			if (it != m_view_ranges.begin() && addr < std::prev(it)->second) {
 				last_view = static_cast<size_t>(std::prev(it) - m_view_ranges.begin());
 				return true;

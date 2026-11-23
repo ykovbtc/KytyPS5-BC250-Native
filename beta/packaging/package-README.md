@@ -183,6 +183,12 @@ keep using KytyPS5. Saves and settings stay.
 Set these per game in the launcher (**game → Settings → Upscaling / Frame generation**), or globally in Settings.
 The [tested games](#tested-games) start with their tested choice.
 
+**Frame pacing → Maximum game FPS** caps real game frames on the current native and upscaler backends.
+Enter a whole number from 1 to 360, or 0 for Off. For example, keep Ghost of Yōtei in Performance mode with
+a 60 Hz virtual display and enter 48 or 55 in its per-game settings. The cap applies on the next launch.
+Frame generation can still add displayed frames. To measure the cap on its own, turn off native and Lossless
+frame generation. The emulator also accepts `--max-game-fps 48` on the command line.
+
 | Option | What it does | Needs |
 | --- | --- | --- |
 | **Upscaler → HLX FSR 4** | [HelixSR](https://github.com/lonewolf0622/HelixSR)'s FSR 4-class upscaler, run in place of the game's own FSR 3. | Nothing: included and set up automatically. |

@@ -34,7 +34,43 @@ internal static class Verification
             Check(Game.Scan(settings).Count == 1, "Nested library scan deduplicates installs");
             settings.ExcludedGames.Add(eboot); Check(Game.Scan(settings).Count == 0, "Excluded games remain excluded");
             Check(KytyBridge.Options.Select(o => o.Id).Distinct().Count() == KytyBridge.Options.Count, "All native setting IDs are unique");
-            Check(KytyBridge.Options.Count == 76 && KytyBridge.Options.Any(o => o.Id == "upscale_preset"), "Complete native settings manifest including upscaling");
+            Check(KytyBridge.Options.Count == 78 && KytyBridge.Options.Any(o => o.Id == "max_game_fps"), "Complete native settings manifest including frame pacing");
+            Check(!KytyBridge.Build(eboot, game.TitleId).Arguments.Contains("--max-game-fps"), "Frame pacing defaults to Off");
+            KytyBridge.Save(null, null, new Dictionary<string, string> { ["max_game_fps"] = "55" });
+            void CheckCap(string expected)
+            {
+                var args = KytyBridge.Build(eboot, game.TitleId).Arguments;
+                var cap = args.IndexOf("--max-game-fps");
+                Check(cap >= 0 && args[cap + 1] == expected && args[args.IndexOf("--vblank-frequency") + 1] == "60",
+                    "Game cap " + expected + " with a 60 Hz virtual display");
+            }
+            CheckCap("55");
+            KytyBridge.Save(game.TitleId, eboot, new Dictionary<string, string> { ["max_game_fps"] = "48" });
+            CheckCap("48");
+            KytyBridge.Save(game.TitleId, eboot, new Dictionary<string, string> { ["max_game_fps"] = "0" });
+            Check(!KytyBridge.Build(eboot, game.TitleId).Arguments.Contains("--max-game-fps"), "Per-game Off overrides a global limit");
+            Check(new[] { "-1", "361", "48.5", "", "fast" }.All(v => !KytyBridge.TryGameFps(v, out _)), "Invalid FPS limits are rejected");
+            KytyBridge.Save(null, null, new Dictionary<string, string>());
+            var session = Environment.GetEnvironmentVariable("PS5_MINIMAL_SESSION");
+            try
+            {
+                Environment.SetEnvironmentVariable("PS5_MINIMAL_SESSION", "1");
+                Check(!KytyBridge.Build(eboot, game.TitleId).Environment.ContainsKey("KYTYPS5_HDMI_MODE"), "Default keeps the current HDMI mode");
+                foreach (var size in new[] { "1920x1080", "2560x1440", "3840x2160" })
+                {
+                    KytyBridge.Save(game.TitleId, eboot, new Dictionary<string, string> { ["hdmi_resolution"] = size });
+                    Check(KytyBridge.Build(eboot, game.TitleId).Environment["KYTYPS5_HDMI_MODE"] == size, "Minimal Mode forwards " + size);
+                }
+                KytyBridge.Save(game.TitleId, eboot, new Dictionary<string, string> {
+                    ["hdmi_resolution"] = "2560x1440", ["upscale_output"] = "1920x1080", ["upscaler"] = "hlx_dlss_e"
+                });
+                var capped = KytyBridge.Build(eboot, game.TitleId);
+                Check(capped.Environment["KYTY_UPSCALE_OUTPUT"] == "1080" && capped.Environment["KYTYPS5_HDMI_MODE"] == "2560x1440",
+                    "Explicit 1080p HLX target can be lower than the HDMI mode");
+                Environment.SetEnvironmentVariable("PS5_MINIMAL_SESSION", null);
+                Check(!KytyBridge.Build(eboot, game.TitleId).Environment.ContainsKey("KYTYPS5_HDMI_MODE"), "Desktop launch preserves its HDMI mode");
+            }
+            finally { Environment.SetEnvironmentVariable("PS5_MINIMAL_SESSION", session); }
             foreach (var hdr in new[] { "auto", "1", "0" })
             {
                 if (hdr != "auto") KytyBridge.Save(game.TitleId, eboot, new Dictionary<string, string> { ["hdr"] = hdr });

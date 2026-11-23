@@ -69,6 +69,7 @@ static void PrintUsage() {
 	::printf("  --amd-cpu                            Apply AMD CPU instruction patches.\n");
 	::printf("  --guest-tsc                          Run the guest TSC at the PS5's 1.6 GHz.\n");
 	::printf("  --vblank-frequency <num>             Virtual vblank frequency. Default: 60.\n");
+	::printf("  --max-game-fps <num>                 Limit real game frames to 1-360 FPS. Default: 0 (off).\n");
 	::printf("  --console-language <0-30>            Console language. Default: 1 (English US).\n");
 	::printf("  --vulkan-validation                  Enable Vulkan validation.\n");
 	::printf("  --network-connected                  Use the host local network.\n");
@@ -416,6 +417,11 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 		} else if (arg == "--vblank-frequency") {
 			if (!ParseUint32(value, options.config.vblank_frequency)) {
 				::printf("invalid vblank frequency: %s\n", value.c_str());
+				return false;
+			}
+		} else if (arg == "--max-game-fps") {
+			if (!ParseUint32(value, options.config.max_game_fps) || options.config.max_game_fps > 360) {
+				::printf("invalid maximum game FPS (expected 0-360): %s\n", value.c_str());
 				return false;
 			}
 		} else if (arg == "--flush-draws") {

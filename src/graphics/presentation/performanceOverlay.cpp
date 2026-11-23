@@ -546,7 +546,8 @@ void DrawPerformance(const Snapshot& shown, vk::Extent2D extent, float scale) {
     ImGui::TextUnformatted("GPU ");
     PerformanceValue(host.gpu_percent, "%", 94, 98);
     ImGui::SameLine(0, 0);
-    ImGui::Text("   VRAM %s", vram.c_str());
+    const std::string clock = host.gpu_clock_mhz ? std::to_string(*host.gpu_clock_mhz) : "N/A";
+    ImGui::Text("   %s MHz   VRAM %s", clock.c_str(), vram.c_str());
     ImGui::TextUnformatted("CPU ");
     PerformanceValue(host.system_cpu_percent, "%", 70, 90);
     ImGui::SameLine(0, 0);

@@ -21,6 +21,7 @@ internal sealed partial class ConsoleWindow
     private int _category;
     private readonly (string Id, string Title, string Symbol, string Description)[] _groups = [
         ("Display", "Screen & video", "◫", "Resolution, refresh rate and the way your games are presented."),
+        ("Frame pacing", "Frame pacing", "◷", "Limit real game frames on the native and upscaler backends. Frame generation can add extra displayed frames."),
         ("Upscaling", "Upscaling", "↗", "Choose the reconstruction method and balance image quality with performance."),
         ("Frame Generation", "Frame generation", "▥", "Lossless Scaling frame generation (needs your own Lossless Scaling from Steam)."),
         ("Audio", "Audio", "♪", "Background music and interface sounds. Changes take effect immediately."),
@@ -174,6 +175,15 @@ internal sealed partial class ConsoleWindow
     {
         EditText(title, _values.GetValueOrDefault(id, ""), value =>
         {
+            if (id == "max_game_fps")
+            {
+                if (!KytyBridge.TryGameFps(value, out var fps))
+                {
+                    Message("Invalid FPS limit", "Enter a whole number from 1 to 360, or 0 for Off.");
+                    return;
+                }
+                value = fps.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
             SaveValue(id, value); SetCategory(_category); Focus(_rows.FirstOrDefault());
         }, id is "keymap" or "extraArguments" or "extraEnvironment",
             id is "patch" or "addcont" or "shaderFolder" or "bufferFolder" or "printfFolder");
@@ -305,7 +315,12 @@ internal sealed partial class ConsoleWindow
 
     private static string ChoiceLabel(string id, string value) => (id, value) switch
     {
+        ("max_game_fps", "0") => "Off", ("max_game_fps", _) => value + " FPS",
         ("hdr", "auto") => "Automatic", ("hdr", "1") => "On", ("hdr", "0") => "Off",
+        ("hdmi_resolution", "auto") => "Use current TV mode",
+        ("hdmi_resolution", "1920x1080") => "1080p · Full HD",
+        ("hdmi_resolution", "2560x1440") => "1440p · QHD",
+        ("hdmi_resolution", "3840x2160") => "2160p · 4K",
         ("upscaler", "auto") => "Automatic  ·  HLX / FSR 4 when supported",
         ("upscaler", "game") => "Game default", ("upscaler", "hlx_fsr4") => "HLX / FSR 4", ("upscaler", "hlx_dlss_e") => "HLX / DLSS (Model E)",
         ("upscale_preset", "dynamic") => "Dynamic", ("upscale_preset", "dlaa") => "Native / DLAA",
@@ -325,6 +340,8 @@ internal sealed partial class ConsoleWindow
 
     private static string Describe(string id) => id switch
     {
+        "max_game_fps" => "Enter 1–360 FPS, or 0 for Off. The PS5 virtual refresh rate stays at its configured value.",
+        "hdmi_resolution" => "In PS5 Minimal Mode, switch the TV signal for this game and cap HLX reconstruction at that resolution. Games that enable 1440p detection can see a 1440p TV. The dashboard returns to its previous mode when the game closes.",
         "upscaler" => "Automatic: HLX / FSR 4 replaces the game's upscaler once Kyty has verified its inputs (games whose interface was identified); other games keep theirs. Or force the game's reconstruction or an HLX path. Choose it here: switching upscalers during play can crash the system on the BC-250 when memory is tight.",
         "framegen" => "FSR 3.1 adds a generated frame between real frames using the game's depth and motion. Automatic enables it below 50 real FPS. It pauses when shared memory is low. Switch in game: PS button > Upscaling.",
         "upscale_preset" => "Native renders at output resolution. Higher ratios reduce internal resolution. Ratios are relative to the output resolution. Changes apply at the next game launch.",

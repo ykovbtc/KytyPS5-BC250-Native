@@ -18,6 +18,7 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/native_gpu/nativeShadow.h"
 #include "graphics/presentation/performanceOverlay.h"
+#include "graphics/presentation/gameFramePacer.h"
 #include "graphics/presentation/presenter.h"
 #include "graphics/native_gpu/nativeUpscaler.h"
 #include "graphics/presentation/renderDoc.h"
@@ -32,6 +33,8 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
+#include <string_view>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -228,6 +231,7 @@ struct VideoOutConfig {
 	uint32_t                            slave_count = 0;
 	int                                 flip_rate   = 0;
 	uint64_t                            output_mode = VIDEO_OUT_OUTPUT_MODE_DEFAULT;
+	bool                                wqhd_detection = false;
 	float                               gamma       = 1.0f;
 	uint64_t                            pre_vblanks = 0;
 	uint64_t                            flip_vblank = 0; // vblank_status.count at the last flip.
@@ -358,6 +362,7 @@ private:
 	const uint32_t       m_width;
 	const uint32_t       m_height;
 	Common::Mutex        m_mutex;
+	GameFramePacer       m_game_pacer {Config::GetMaxGameFps()}; // guarded by m_mutex
 	Common::CondVar      m_submit_slot_cond_var;
 	Common::CondVar      m_done_cond_var;
 	std::list<Request>   m_requests;
@@ -868,6 +873,10 @@ VideoOutDriver::Impl& VideoOutDriver::State() noexcept {
 
 VideoOutDriver& VideoOutInit(uint32_t width, uint32_t height, Graphics::Presenter& presenter) {
 	EXIT_IF(g_video_out_driver != nullptr);
+	if (Config::GetMaxGameFps() != 0) {
+		std::fprintf(stderr, "Frame pacing: maximum %u game FPS, virtual display %u Hz\n",
+		             Config::GetMaxGameFps(), Config::GetVblankFrequency());
+	}
 	g_video_out_driver = std::make_unique<VideoOutDriver>(width, height, presenter);
 	return *g_video_out_driver;
 }
@@ -932,6 +941,7 @@ int VideoOutDriver::Impl::Open(int bus_type, int index) {
 		EXIT("video-out port generation wrapped\n");
 	}
 	config.output_mode               = VIDEO_OUT_OUTPUT_MODE_DEFAULT;
+	config.wqhd_detection            = false;
 	config.flip_status               = VideoOutFlipStatus();
 	config.flip_status.flipArg       = -1;
 	config.flip_status.currentBuffer = -1;
@@ -1409,6 +1419,9 @@ void FlipQueue::Cancel(VideoOutConfig& cfg) {
 		}
 	}
 	m_side_shown.erase(&cfg);
+	if (cfg.bus == VIDEO_OUT_BUS_TYPE_MAIN) {
+		m_game_pacer.Reset();
+	}
 	SignalDoneLocked();
 	m_submit_slot_cond_var.SignalAll();
 	m_mutex.Unlock();
@@ -1739,6 +1752,8 @@ bool FlipQueue::Flip() {
 	// A direct request is not Kyty's to present (TryDirect sent it or will), but it still holds back
 	// the newer flips of its port until the display completed it (OlderPendingOnPort).
 	uint64_t group = 0;
+	const auto pace_time = m_game_pacer.Enabled() ? GameFramePacer::Clock::now() : GameFramePacer::Clock::time_point {};
+	const bool hold_main = !m_game_pacer.Due(pace_time);
 	for (const auto& owner: m_requests) {
 		if (owner.group != owner.id || owner.direct) {
 			continue;
@@ -1746,8 +1761,9 @@ bool FlipQueue::Flip() {
 		const uint64_t candidate = owner.id;
 		if (std::any_of(m_cpu_requests.begin(), m_cpu_requests.end(),
 		                [candidate](const auto& r) { return r.group == candidate; }) ||
-		    std::any_of(m_requests.begin(), m_requests.end(), [this, candidate](const auto& r) {
-			    return r.group == candidate && (r.state != RequestState::Ready || OlderPendingOnPort(r));
+		    std::any_of(m_requests.begin(), m_requests.end(), [this, candidate, hold_main](const auto& r) {
+			    return r.group == candidate && (r.state != RequestState::Ready || OlderPendingOnPort(r) ||
+			                                    (hold_main && r.cfg->bus == VIDEO_OUT_BUS_TYPE_MAIN));
 		    })) {
 			continue;
 		}
@@ -1821,6 +1837,9 @@ bool FlipQueue::Flip() {
 		}
 		auto&     r        = *it;
 		const int previous = r.cfg->flip_status.currentBuffer;
+		if (m_game_pacer.Enabled() && r.cfg->bus == VIDEO_OUT_BUS_TYPE_MAIN) {
+			m_game_pacer.Advance(pace_time);
+		}
 		r.cfg->flip_vblank = r.cfg->vblank_status.count;
 		r.cfg->flip_status.count++;
 		r.cfg->flip_status.processTime              = LibKernel::KernelGetProcessTime();
@@ -1996,6 +2015,10 @@ void FlipQueue::PumpDirectLocked(VideoOutConfig& cfg, double now) {
 			it = CompleteDirectLocked(it, now);
 			continue;
 		}
+		const auto pace_time = m_game_pacer.Enabled() ? GameFramePacer::Clock::now() : GameFramePacer::Clock::time_point {};
+		if (!m_direct_failed && !m_game_pacer.Due(pace_time)) {
+			break; // Keep the buffer pending until a later watchdog tick or display event.
+		}
 		r.state           = RequestState::Presenting;
 		r.direct_sent     = now;
 		r.direct_deadline = now;
@@ -2022,6 +2045,9 @@ void FlipQueue::PumpDirectLocked(VideoOutConfig& cfg, double now) {
 			continue;
 		}
 		cfg.direct_last_target = target != 0 ? target : last_msc + 1;
+		if (m_game_pacer.Enabled()) {
+			m_game_pacer.Advance(pace_time);
+		}
 		// 250 ms after the vblank it is due at (counted at 30 Hz, so a 120 Hz output is not shorter).
 		r.direct_deadline = now + 0.25 + static_cast<double>(target > last_msc ? target - last_msc : 1) / 30.0;
 		auto& hold        = cfg.holds[r.index];
@@ -2269,7 +2295,8 @@ void FlipQueue::DirectWatchdog(double now) {
 					++it;
 				}
 			}
-			// The rest, once the requests before them have reached the display.
+		}
+		if (expired || m_game_pacer.Enabled()) {
 			PumpDirectLocked(cfg, now);
 		}
 		// A buffer off the screen whose IdleNotify has not come within 1 s: the display let it go
@@ -3200,6 +3227,12 @@ KYTY_SYSV_ABI int VideoOutGetOutputStatus(int handle, VideoOutOutputStatus* stat
 	// Primary output reports 4K unless param.json Video-out Info enables resolution detection.
 	status->resolution =
 	    ((attribute3 & 4) != 0 && driver.width < 3840 && driver.height < 2160 ? 1u : 2u);
+	if (const char* mode = std::getenv("KYTYPS5_HDMI_MODE")) {
+		const std::string_view size(mode);
+		if (size == "1920x1080") status->resolution = 1;
+		if (size == "3840x2160") status->resolution = 2;
+		if (size == "2560x1440") status->resolution = ctx->wqhd_detection ? 4u : 1u;
+	}
 	status->dynamicRange = (attribute & 0x20000000) != 0 && driver.IsHdrSupported() ? 2u : 1u;
 	status->refreshRate =
 	    (ctx->output_mode == VIDEO_OUT_OUTPUT_MODE_119_88HZ || Config::GetVblankFrequency() >= 119
@@ -3215,9 +3248,12 @@ KYTY_SYSV_ABI int VideoOutGetOutputStatus(int handle, VideoOutOutputStatus* stat
 }
 
 KYTY_SYSV_ABI int VideoOutAllowOutputResolutionWqhdDetection(int handle) {
-	if (DriverState().Get(handle) == nullptr) {
+	auto* ctx = DriverState().Get(handle);
+	if (ctx == nullptr) {
 		return VIDEO_OUT_ERROR_INVALID_HANDLE;
 	}
+	Common::LockGuard lock(ctx->mutex);
+	ctx->wqhd_detection = true;
 	return OK;
 }
 

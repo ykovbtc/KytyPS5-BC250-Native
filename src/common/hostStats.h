@@ -33,6 +33,7 @@ struct HostStats {
 	std::optional<double> cpu_temperature;
 	std::optional<double> gpu_temperature;
 	std::optional<double> vram_temperature;
+	std::optional<uint64_t> gpu_clock_mhz;
 	std::optional<uint64_t> vram_used;
 	std::optional<uint64_t> vram_total;
 

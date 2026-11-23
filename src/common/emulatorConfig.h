@@ -77,6 +77,7 @@ struct ConfigOptions {
 	bool                   network_connected           = false;
 	bool                   psn_emulation_enabled       = false;
 	uint32_t               vblank_frequency            = 60;
+	uint32_t               max_game_fps                = 0;
 	uint32_t               console_language            = DEFAULT_CONSOLE_LANGUAGE;
 	bool                   vulkan_validation_enabled   = false;
 	bool                   shader_validation_enabled   = false;
@@ -150,6 +151,7 @@ bool     GuestTscEnabled();
 bool     IsNetworkConnected();
 bool     PsnEmulationEnabled();
 uint32_t GetVblankFrequency();
+uint32_t GetMaxGameFps();
 uint32_t GetConsoleLanguage();
 bool     VulkanValidationEnabled();
 
