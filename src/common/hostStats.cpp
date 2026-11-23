@@ -450,6 +450,15 @@ void SampleHardware(PlatformState& state, HostStats& stats) {
 		stats.vram_used = HostStatsLinux::ParseUnsigned(ReadSensor(path / "mem_info_vram_used"));
 		stats.vram_total = HostStatsLinux::ParseUnsigned(ReadSensor(path / "mem_info_vram_total"));
 		stats.gpu_temperature = ReadTemperature(path / "hwmon", false);
+		for (const auto& sensor: SensorEntries(path / "hwmon")) {
+			if (ReadSensor(sensor / "name") != "amdgpu") continue;
+			stats.gpu_clock_mhz = HostStatsLinux::ClockMHz(ReadSensor(sensor / "freq1_input"));
+			if (stats.gpu_clock_mhz) break;
+		}
+		if (!stats.gpu_clock_mhz) {
+			std::ifstream levels(path / "pp_dpm_sclk");
+			stats.gpu_clock_mhz = HostStatsLinux::ActiveClockMHz(levels);
+		}
 	}
 	stats.cpu_temperature = ReadTemperature("/sys/class/hwmon", true);
 	const auto missing = [&](bool available, const char* name) {

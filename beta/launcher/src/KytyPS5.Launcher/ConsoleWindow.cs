@@ -410,8 +410,7 @@ internal sealed partial class ConsoleWindow : Window
             var logDir = System.IO.Path.Combine(Preferences.Root, "logs"); Directory.CreateDirectory(logDir);
             _logFile = System.IO.Path.Combine(logDir, $"{game.TitleId}-{DateTime.Now:yyyyMMdd-HHmmss}.log");
             _logLines.Clear();
-            var process = new Process { StartInfo = info };
-            _gameProcess = process;
+            using var process = new Process { StartInfo = info };
             // Stream to disk without accumulating a session-sized log in memory.
             using var writer = new StreamWriter(_logFile, false) { AutoFlush = true };
             void Log(object sender, DataReceivedEventArgs args)
@@ -420,16 +419,31 @@ internal sealed partial class ConsoleWindow : Window
                 lock (writer) { writer.WriteLine(args.Data); _logLines.Enqueue(args.Data); while (_logLines.Count > 150) _logLines.Dequeue(); }
             }
             process.OutputDataReceived += Log; process.ErrorDataReceived += Log;
-            if (!process.Start()) throw new IOException("Could not start the native runtime.");
-            _launching = false;
-            process.BeginOutputReadLine(); process.BeginErrorReadLine();
-            _inputTimer.Interval = TimeSpan.FromMilliseconds(250); ShowHome();
-            await process.WaitForExitAsync();
-            process.WaitForExit();
+            string[]? restoreHdmi = null;
+            try
+            {
+                if (command.Environment.GetValueOrDefault("KYTYPS5_HDMI_MODE") is { } hdmi)
+                {
+                    var previous = await RunHdmiHelperAsync(hdmi);
+                    if (previous.Length > 0) restoreHdmi = JsonSerializer.Deserialize<string[]>(previous);
+                }
+                if (_closing) return;
+                if (!process.Start()) throw new IOException("Could not start the native runtime.");
+                _gameProcess = process;
+                _launching = false;
+                process.BeginOutputReadLine(); process.BeginErrorReadLine();
+                _inputTimer.Interval = TimeSpan.FromMilliseconds(250); ShowHome();
+                await process.WaitForExitAsync();
+                process.WaitForExit();
+            }
+            finally
+            {
+                if (restoreHdmi is not null) await RunHdmiHelperAsync(restoreHdmi);
+            }
             var code = process.ExitCode;
             process.OutputDataReceived -= Log; process.ErrorDataReceived -= Log;
             if (!_closing) await RestoreDashboardSdrAsync();
-            process.Dispose(); _gameProcess = null;
+            _gameProcess = null;
             _inputTimer.Interval = TimeSpan.FromMilliseconds(33);
             if (_closing) return;
             _audio.Resume(); OpenPage("home"); Activate(); PlayMusic();
@@ -444,6 +458,23 @@ internal sealed partial class ConsoleWindow : Window
             Message("Could not launch game", e.Message);
         }
         finally { _launching = false; }
+    }
+
+    private static async Task<string> RunHdmiHelperAsync(params string[] arguments)
+    {
+        var bundle = Environment.GetEnvironmentVariable("KYTYPS5_BUNDLE_ROOT")
+            ?? throw new IOException("Cannot locate the PS5 Minimal Mode display tools.");
+        var info = new ProcessStartInfo(System.IO.Path.Combine(bundle, "bin/python3"))
+            { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+        info.ArgumentList.Add("-I");
+        info.ArgumentList.Add(System.IO.Path.Combine(bundle, "session-hdmi.py"));
+        foreach (var argument in arguments) info.ArgumentList.Add(argument);
+        using var process = Process.Start(info) ?? throw new IOException("Could not start the HDMI display tool.");
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        if (process.ExitCode != 0) throw new IOException((await error).Trim());
+        return (await output).Trim();
     }
 
     private async Task RestoreDashboardSdrAsync()

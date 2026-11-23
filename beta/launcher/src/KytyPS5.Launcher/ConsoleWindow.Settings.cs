@@ -306,6 +306,10 @@ internal sealed partial class ConsoleWindow
     private static string ChoiceLabel(string id, string value) => (id, value) switch
     {
         ("hdr", "auto") => "Automatic", ("hdr", "1") => "On", ("hdr", "0") => "Off",
+        ("hdmi_resolution", "auto") => "Use current TV mode",
+        ("hdmi_resolution", "1920x1080") => "1080p · Full HD",
+        ("hdmi_resolution", "2560x1440") => "1440p · QHD",
+        ("hdmi_resolution", "3840x2160") => "2160p · 4K",
         ("upscaler", "auto") => "Automatic  ·  HLX / FSR 4 when supported",
         ("upscaler", "game") => "Game default", ("upscaler", "hlx_fsr4") => "HLX / FSR 4", ("upscaler", "hlx_dlss_e") => "HLX / DLSS (Model E)",
         ("upscale_preset", "dynamic") => "Dynamic", ("upscale_preset", "dlaa") => "Native / DLAA",
@@ -325,6 +329,7 @@ internal sealed partial class ConsoleWindow
 
     private static string Describe(string id) => id switch
     {
+        "hdmi_resolution" => "In PS5 Minimal Mode, switch the TV signal for this game and cap HLX reconstruction at that resolution. Games that enable 1440p detection can see a 1440p TV. The dashboard returns to its previous mode when the game closes.",
         "upscaler" => "Automatic: HLX / FSR 4 replaces the game's upscaler once Kyty has verified its inputs (games whose interface was identified); other games keep theirs. Or force the game's reconstruction or an HLX path. Choose it here: switching upscalers during play can crash the system on the BC-250 when memory is tight.",
         "framegen" => "FSR 3.1 adds a generated frame between real frames using the game's depth and motion. Automatic enables it below 50 real FPS. It pauses when shared memory is low. Switch in game: PS button > Upscaling.",
         "upscale_preset" => "Native renders at output resolution. Higher ratios reduce internal resolution. Ratios are relative to the output resolution. Changes apply at the next game launch.",

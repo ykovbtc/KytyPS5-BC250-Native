@@ -5,6 +5,7 @@
 #include "graphics/native_gpu/gemBacking.h"
 #include "graphics/native_gpu/nativeShadow.h"
 #include "graphics/native_gpu/upscaler/frameGenGuard.h"
+#include "graphics/native_gpu/upscaler/hlxOutputSize.h"
 #include "graphics/native_gpu/upscaler/taaCalibration.h"
 #include "graphics/native_gpu/upscaler/titleProfile.h"
 #include "graphics/native_gpu/upscaler/upscalerShaders.h"
@@ -31,6 +32,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -128,6 +130,7 @@ std::atomic<int> g_upscaler {0};   // UpscalerKind, set by the settings (menu, f
 std::atomic<int> g_level {-1};     // -1 dynamic, else a level of the 128x72 grid (LevelSize; 16+ below the title's table)
 std::atomic<int> g_preset {0};     // Preset
 std::atomic<int> g_output_h {0};   // HLX output height (1440, 1800); 0 the title's own output
+bool g_spatial_gap = false; // guarded by g_mutex; attaches the reset to the first temporal frame after a gap
 std::atomic<bool> g_hlx_reset {true}; // the next HLX frame starts a new history (activation, resolution change)
 // KYTY_NATIVE_UPSCALER: test modes (probe/roundtrip/passthrough) fix the mode; "hlx" only sets the initial choice.
 Mode EnvMode() {
@@ -242,8 +245,20 @@ struct KfdBuffer {
 	}
 };
 
+// The launcher sets the mode for the lifetime of this game process.
+int HdmiHeight() {
+	static const int height = [] {
+		const char* mode = std::getenv("KYTYPS5_HDMI_MODE");
+		if (!mode) return 0;
+		if (std::strcmp(mode, "1920x1080") == 0) return 1080;
+		if (std::strcmp(mode, "2560x1440") == 0) return 1440;
+		return std::strcmp(mode, "3840x2160") == 0 ? 2160 : 0;
+	}();
+	return height;
+}
+
 constexpr uint32_t kSlots        = 64; // in-flight boundaries (each holds its frame: one at a time in practice)
-constexpr uint32_t kTablesPerSlot = 10;
+constexpr uint32_t kTablesPerSlot = 12;
 constexpr uint64_t kCodePack     = 0x0000;
 constexpr uint64_t kCodeUnpack   = 0x0100;
 constexpr uint64_t kCodePackRg   = 0x0200; // two-channel 16-bit float (pack_rg16f.s)
@@ -255,6 +270,7 @@ constexpr uint64_t kCodeCopy4A0  = 0x0700;
 constexpr uint64_t kCodeFgGuides = 0x0800; // frame generation guides, reduced (fg_guides.s; up to 0x800 bytes)
 constexpr uint64_t kTables       = 0x1000; // kSlots * kTablesPerSlot * 64 bytes
 constexpr uint64_t kFlags        = 0x10000; // one dword per slot: 1 = run the unpack
+static_assert(kTables + kSlots * kTablesPerSlot * 64 <= kFlags);
 constexpr uint64_t kFailFlags    = kFlags + 0x100;
 constexpr uint64_t kStamps       = 0x10400; // KYTY_NATIVE_UPSCALER_STALL: two GPU clocks per slot (16 bytes)
 constexpr uint64_t kCodeScale4A0 = 0x11000;
@@ -641,8 +657,8 @@ bool InitDevice(const Snapshot& s) {
 	// dynamic resolution renders up to the output size.
 	const auto level = LevelSize(g_level.load());
 	const bool fixed = level.first != 0 && ((out_w == 3840 && out_h == 2160) || Prof().taa_startup_presets);
-	// HLX's output at the chosen output resolution (a fixed preset only: the title's own dynamic resolution renders
-	// up to 4K): its network and its output texture at that size, scaled into the title's 4K output (scale4_a0).
+	// Limit the helper's textures even when the game's dynamic render range reaches 4K.
+	const int hdmi_limit = HdmiHeight() && GetMode() == Mode::Hlx ? HlxHeightLimit(HdmiHeight(), g_output_h.load()) : 0;
 	const auto target = TargetSize();
 	uint64_t   at     = 0;
 	for (unsigned i = 0; i < kResCount; i++) {
@@ -660,6 +676,7 @@ bool InitDevice(const Snapshot& s) {
 				r.w = level.first;
 				r.h = level.second;
 			}
+			if (hdmi_limit) std::tie(r.w, r.h) = LimitHlxExtent(r.w, r.h, hdmi_limit);
 			r.format = 1; // 8_UNORM
 			r.bpp    = 1;
 			r.pitch  = ((r.w * r.bpp + 255u) & ~255u) / r.bpp;
@@ -678,7 +695,9 @@ bool InitDevice(const Snapshot& s) {
 			r.w = level.first;
 			r.h = level.second;
 		}
-		if (fixed && i == kOutput && GetMode() == Mode::Hlx && target.first != 0 && target.first < out_w) {
+		if (hdmi_limit) {
+			std::tie(r.w, r.h) = LimitHlxExtent(r.w, r.h, hdmi_limit);
+		} else if (fixed && i == kOutput && GetMode() == Mode::Hlx && target.first != 0 && target.first < out_w) {
 			r.w = target.first;
 			r.h = target.second;
 		}
@@ -775,7 +794,7 @@ void WriteCopyTable(uint64_t table_off, const ShaderTextureResource& src, const 
 // The source region is the top-left sw x sh of the source image (its T# size, e.g. a render-size frame in a 4K
 // target); the destination is its top-left dw x dh.
 void WriteScaleTable(uint64_t table_off, const ShaderTextureResource& src, uint32_t sw, uint32_t sh, const ShaderTextureResource& dst,
-                     uint32_t dw, uint32_t dh) {
+                     uint32_t dw, uint32_t dh, float exposure = 1.0f, float alpha = 0.0f) {
 	const uint32_t tw = src.Width5() + 1u, th = src.Height5() + 1u;
 	auto* p = reinterpret_cast<volatile uint32_t*>(g_dev.control.cpu + table_off);
 	for (unsigned i = 0; i < 8; i++) {
@@ -797,6 +816,8 @@ void WriteScaleTable(uint64_t table_off, const ShaderTextureResource& src, uint3
 	}
 	p[24] = sw - 1u;
 	p[25] = sh - 1u;
+	p[26] = std::bit_cast<uint32_t>(exposure);
+	p[27] = std::bit_cast<uint32_t>(alpha);
 }
 uint64_t CopyCode(uint32_t format) {
 	// (by channels: the texture unit converts each side's encoding; 11_11_10 holds three)
@@ -2009,8 +2030,8 @@ void Worker() {
 			f.id           = s->id;
 			f.rw           = s->dims[kColor][0];
 			f.rh           = s->dims[kColor][1];
-			f.ow           = std::min(s->dims[kOutput][0], g_dev.region[kOutput].w); // (the output resolution setting)
-			f.oh           = std::min(s->dims[kOutput][1], g_dev.region[kOutput].h);
+			std::tie(f.ow, f.oh) = HlxDispatchExtent(s->dims[kOutput][0], s->dims[kOutput][1],
+			                                        g_dev.region[kOutput].w, g_dev.region[kOutput].h);
 			f.jitter[0]    = s->Field<float>(0x6e8);
 			f.jitter[1]    = s->Field<float>(0x6ec);
 			f.mv_scale[0]  = s->Field<float>(0x6f0);
@@ -2167,7 +2188,7 @@ void LoadSettings() {
 	}
 	if (const char* o = std::getenv("KYTY_UPSCALE_OUTPUT")) { // 2160 (or native) | 1800 | 1440: HLX's output resolution
 		const int h = std::atoi(o);
-		g_output_h  = h == 1800 || h == 1440 ? h : 0;
+		g_output_h  = h == 1800 || h == 1440 || (HdmiHeight() && h == 1080) ? h : 0;
 	}
 	if (EnvMode() == Mode::Hlx) g_upscaler = static_cast<int>(UpscalerKind::Hlx);
 	if (const char* p = std::getenv("KYTY_UPSCALE_PRESET")) {
@@ -2206,7 +2227,7 @@ void LoadSettings() {
 		}
 		g_level    = -1;
 		g_preset   = static_cast<int>(Preset::Dynamic);
-		g_output_h = 0;
+		if (!HdmiHeight()) g_output_h = 0;
 	}
 	if (g_auto.load()) g_upscaler = static_cast<int>(UpscalerKind::Game); // the game's upscaler until the self-check passes
 	if (g_auto.load() || g_fg_when_slow.load()) { // frame generation starts from OnVerified
@@ -2276,7 +2297,8 @@ namespace {
 // The output height presets are relative to: HLX's chosen output resolution, else the title's (4K) output.
 // The title's FSR3 always outputs at the title's resolution.
 int TargetHeight(UpscalerKind u, int output_h) {
-	return u != UpscalerKind::Game && (output_h == 1800 || output_h == 1440) ? output_h : 2160;
+	if (u == UpscalerKind::Game) return 2160;
+	return HlxHeightLimit(HdmiHeight(), output_h);
 }
 // The grid level (128x72 steps from 3840x2160: the title's own table, then the same steps below it) nearest to
 // each preset's ratio at `target_h` (nearest in log scale), never above the target. At 4K: DLAA 0 (3840x2160),
@@ -2318,6 +2340,8 @@ std::pair<uint32_t, uint32_t> LevelSize(int level) {
 std::pair<uint32_t, uint32_t> TargetSize() {
 	const auto out = OutputSize();
 	const int  h   = TargetHeight(static_cast<UpscalerKind>(g_upscaler.load()), g_output_h.load());
+	if (HdmiHeight() && GetMode() == Mode::Hlx)
+		return LimitHlxExtent(out.first, out.second, h);
 	if (h >= 2160 || g_level.load() < 0 || out.first != 3840 || out.second != 2160) {
 		return out; // the title's output (a dynamic resolution, or another output, keeps it)
 	}
@@ -2473,7 +2497,7 @@ void ApplySettings(const Settings& in) {
 		std::lock_guard lock(g_up_note_mutex);
 		g_up_note.clear();
 	}
-	const int output_h = in.output_h == 1800 || in.output_h == 1440 ? in.output_h : 0;
+	const int output_h = in.output_h == 1800 || in.output_h == 1440 || (HdmiHeight() && in.output_h == 1080) ? in.output_h : 0;
 	const int level    = in.preset == Preset::Custom ? in.level : PresetLevelFor(in.preset, TargetHeight(in.upscaler, output_h));
 	if (static_cast<int>(in.upscaler) != g_upscaler.load() && g_dev.state.load(std::memory_order_acquire) == 2 && g_hlx >= 0) {
 		g_hlx_retire.store(true); // the running helper goes: another network gets a fresh one, the title's FSR3 none
@@ -3930,7 +3954,7 @@ bool TakeRasterBoundary(uint64_t packet, uint64_t ps, const uint32_t* ud, uint32
 	std::memcpy(consumer_ud, view.fields, 32);
 	TaaCapture(packet, consumer, consumer_ud, 0xffu, false);
 	if (!TakeBoundary(packet, consumer, false, boundary)) return false;
-	boundary->skip_dispatch = boundary->gate != 0; // guides-only boundaries still run the title's draw
+	boundary->skip_dispatch = boundary->skip_dispatch || boundary->gate != 0; // guides-only boundaries still run the title's draw
 	if (!boundary->skip_dispatch) return true;
 	static std::atomic<unsigned> replacements {0};
 	if (replacements.fetch_add(1) % 600 == 0) LogJson("{\"event\":\"raster_taa_replaced\",\"invocation\":%llu}",
@@ -3943,26 +3967,37 @@ namespace {
 // nothing would write the title's output: what it draws over it afterwards (rain, particles) would pile up for
 // seconds. The title's own colour is scaled into it instead (scale4_a0), every frame, until FSR3 or HLX is back.
 // Caller holds g_mutex.
-void StandIn(const Snapshot& s, uint32_t slot, unsigned& table, bool compute_ring, std::vector<uint32_t>& ib) {
+bool StandIn(const Snapshot& s, uint32_t slot, unsigned& table, bool compute_ring, std::vector<uint32_t>& ib) {
 	const auto&    c = s.res[kColor];
 	const auto&    o = s.res[kOutput];
 	const uint32_t rw = s.Field<uint32_t>(0x6f8), rh = s.Field<uint32_t>(0x6fc);
+	const auto color_format = static_cast<uint32_t>(c.t.Format());
+	const auto output_format = static_cast<uint32_t>(o.t.Format());
 	if (g_dev.control.cpu == nullptr || table + 2 > kTablesPerSlot || !c.present || !o.present || !Plain2D(c.t) || !Plain2D(o.t) ||
-	    static_cast<uint32_t>(c.t.Format()) != 71 || static_cast<uint32_t>(o.t.Format()) != 71 || rw == 0 || rh == 0 ||
+	    (color_format != 71 && color_format != 36) || (output_format != 71 && output_format != 36) || rw == 0 || rh == 0 ||
 	    rw > c.t.Width5() + 1u || rh > c.t.Height5() + 1u) {
-		return;
+		return false;
 	}
-	const uint32_t ow = o.t.Width5() + 1u, oh = o.t.Height5() + 1u;
+	const uint32_t ow = s.dims[kOutput][0], oh = s.dims[kOutput][1];
+	if (!ow || !oh) return false;
 	const uint64_t t  = kTables + (slot * kTablesPerSlot + table) * 64u;
 	table += 2;
-	WriteScaleTable(t, c.t, rw, rh, o.t, ow, oh);
+	const bool exposed = Prof().taa && (Prof().taa_raster || Prof().taa_scale.Valid() || CalibratedExposure());
+	WriteScaleTable(t, c.t, rw, rh, o.t, ow, oh, exposed ? s.Field<float>(0x72c) : 1.0f, exposed ? 1.0f : 0.0f);
 	Region r {};
 	EmitDispatch(ib, kCodeScale4A0, t, r, ow, oh, compute_ring, 64);
+	if (s.raster_history.present && table + 2 <= kTablesPerSlot) {
+		const uint64_t ht = kTables + (slot * kTablesPerSlot + table) * 64u;
+		table += 2;
+		WriteScaleTable(ht, c.t, rw, rh, s.raster_history.t, ow, oh, 1.0f, 1.0f);
+		EmitDispatch(ib, kCodeScale4A0, ht, r, ow, oh, compute_ring, 64);
+	}
 	static std::atomic<uint64_t> n {0};
 	if (n.fetch_add(1) % 300 == 0) {
 		LogJson("{\"event\":\"stand_in\",\"invocation\":%llu,\"render\":[%u,%u],\"output\":[%u,%u],\"count\":%llu}",
 		        static_cast<unsigned long long>(s.id), rw, rh, ow, oh, static_cast<unsigned long long>(n.load()));
 	}
+	return true;
 }
 bool SkipWanted() {
 	static const bool v = [] { // on unless KYTY_NATIVE_UPSCALER_SKIP_FSR3=0 (FSR3 then runs underneath, for A/B tests)
@@ -4097,10 +4132,31 @@ bool TakeBoundary(uint64_t packet, uint64_t shader, bool compute_ring, Boundary*
 	const bool upscale = calibrating || !OutputsDecided() || mode == Mode::Off ? false
 	                     : mode == Mode::Hlx                                    ? Decide(*s)
 	                                                                            : (DeviceReady(*s) && ActiveWindow());
-	if (!upscale && PoolBlocksFsr3()) {
+	// Every resource the mode needs must match the staging layout chosen at init (sizes and formats).
+	// This frame's extent: the descriptor's own, clipped to the dispatch's render size for render-size inputs.
+	const uint32_t rw = s->Field<uint32_t>(0x6f8), rh = s->Field<uint32_t>(0x6fc);
+	for (unsigned i = 0; i < kResCount; i++) {
+		const auto& t = s->res[i].t;
+		uint32_t    w = t.Width5() + 1u, h = t.Height5() + 1u;
+		if (i == kOutput && mode == Mode::Hlx && HdmiHeight()) {
+			w = std::min(w, s->Field<uint32_t>(0x700));
+			h = std::min(h, s->Field<uint32_t>(0x704));
+		}
+		if (i != kOutput && rw != 0 && rh != 0) {
+			w = std::min(w, rw);
+			h = std::min(h, rh);
+		}
+		s->dims[i] = {w, h};
+	}
+	const bool capped = mode == Mode::Hlx && HdmiHeight() && g_dev.state.load(std::memory_order_acquire) == 2;
+	const auto& out_r = g_dev.region[kOutput];
+	const auto dispatch = capped ? HlxDispatchExtent(s->dims[kOutput][0], s->dims[kOutput][1], out_r.w, out_r.h)
+	                             : std::pair<uint32_t, uint32_t>{};
+	const bool above_cap = capped && (rw > dispatch.first || rh > dispatch.second);
+	if ((above_cap && !calibrating && RuntimeVerified() && OutputsDecided()) || (!upscale && PoolBlocksFsr3())) {
+		if (above_cap) g_spatial_gap = true;
 		s->performance.upscaler = "Spatial fallback";
-		// FSR3's working memory is released (or moving back): its accumulate pass must not run. Nothing is inserted
-		// but the pass's removal (and the guide copies when frame generation wants them).
+		// Keep a current image in the guest output while the temporal pass is bypassed.
 		Decide(*s);
 		out->id            = s->id;
 		out->gate          = 0;
@@ -4112,7 +4168,11 @@ bool TakeBoundary(uint64_t packet, uint64_t shader, bool compute_ring, Boundary*
 		if (fg) {
 			FgEmit(*s, static_cast<uint32_t>(s->id % kSlots), table, compute_ring, out->before);
 		}
-		StandIn(*s, static_cast<uint32_t>(s->id % kSlots), table, compute_ring, out->before);
+		const bool wrote_output = StandIn(*s, static_cast<uint32_t>(s->id % kSlots), table, compute_ring, out->before);
+		if (!wrote_output && !PoolBlocksFsr3()) {
+			out->skip_dispatch = false;
+			s->performance.upscaler = Prof().taa ? "Game TAA" : "Game FSR 3.1";
+		}
 		Common::Performance::Observe(s->performance);
 		if (fg) {
 			if (s->fg_set >= 0) {
@@ -4126,18 +4186,6 @@ bool TakeBoundary(uint64_t packet, uint64_t shader, bool compute_ring, Boundary*
 	if (!upscale && !fg) {
 		Common::Performance::Observe(s->performance);
 		return false;
-	}
-	// Every resource the mode needs must match the staging layout chosen at init (sizes and formats).
-	// This frame's extent: the descriptor's own, clipped to the dispatch's render size for render-size inputs.
-	const uint32_t rw = s->Field<uint32_t>(0x6f8), rh = s->Field<uint32_t>(0x6fc);
-	for (unsigned i = 0; i < kResCount; i++) {
-		const auto& t = s->res[i].t;
-		uint32_t    w = t.Width5() + 1u, h = t.Height5() + 1u;
-		if (i != kOutput && rw != 0 && rh != 0) {
-			w = std::min(w, rw);
-			h = std::min(h, rh);
-		}
-		s->dims[i] = {w, h};
 	}
 	auto fits = [&](unsigned i) {
 		const auto& r = g_dev.region[i];
@@ -4187,15 +4235,18 @@ bool TakeBoundary(uint64_t packet, uint64_t shader, bool compute_ring, Boundary*
 			}
 		}
 		// HLX's output at another size than the title's (the output resolution setting): scaled into it.
-		const auto& out_r  = g_dev.region[kOutput];
 		// A larger allocation is capacity, not an upscale request. HLX dispatches only the active output
 		// rectangle when a raster title changes it between scenes.
-		const bool  scaled = out_r.w < s->dims[kOutput][0] || out_r.h < s->dims[kOutput][1];
-		if (scaled ? !(s->res[kOutput].present && Plain2D(s->res[kOutput].t) && out_r.bytes != 0 && out_r.format == 71 &&
-		               static_cast<uint32_t>(s->res[kOutput].t.Format()) == 71 && out_r.w < s->dims[kOutput][0] &&
-		               out_r.h < s->dims[kOutput][1] && table + 7 <= kTablesPerSlot)
+		const auto [hlx_w, hlx_h] = HlxDispatchExtent(s->dims[kOutput][0], s->dims[kOutput][1], out_r.w, out_r.h);
+		const bool scaled = out_r.w < s->dims[kOutput][0] || out_r.h < s->dims[kOutput][1];
+		if (scaled ? !(s->res[kOutput].present && Plain2D(s->res[kOutput].t) && out_r.bytes != 0 && (out_r.format == 71 || out_r.format == 36) &&
+			               static_cast<uint32_t>(s->res[kOutput].t.Format()) == out_r.format && table + 7 + (s->raster_history.present ? 2 : 0) <= kTablesPerSlot)
 		           : !fits(kOutput)) {
 			return guides_only();
+		}
+		if (g_spatial_gap) {
+			SetField<uint8_t>(*s, 0x718, 1);
+			g_spatial_gap = false;
 		}
 		g_last_render = (s->dims[kColor][0] << 16u) | (s->dims[kColor][1] & 0xffffu);
 		g_last_output = (s->dims[kOutput][0] << 16u) | (s->dims[kOutput][1] & 0xffffu);
@@ -4219,10 +4270,10 @@ bool TakeBoundary(uint64_t packet, uint64_t shader, bool compute_ring, Boundary*
 			return true;
 		}
 		const uint64_t t          = kTables + (slot * kTablesPerSlot + table) * 64u;
-		const bool     taa_scaled = !scaled && Prof().taa && (Prof().taa_raster || Prof().taa_scale.Valid() || CalibratedExposure());
+		const bool     taa_scaled = Prof().taa && (Prof().taa_raster || Prof().taa_scale.Valid() || CalibratedExposure());
 		table += scaled || taa_scaled ? 2 : 1;
 		std::vector<uint32_t> d;
-		if (taa_scaled) { // HLX's output x the TAA's exposure (the colour HLX saw is before it), alpha 1
+		if (taa_scaled && !scaled) { // HLX's output x the TAA's exposure (the colour HLX saw is before it), alpha 1
 			WriteCopyTable(t, g_dev.hlx[kOutput], s->res[kOutput].t);
 			const float f = s->Field<float>(0x72c);
 			uint32_t    u = 0;
@@ -4230,7 +4281,8 @@ bool TakeBoundary(uint64_t packet, uint64_t shader, bool compute_ring, Boundary*
 			*reinterpret_cast<volatile uint32_t*>(g_dev.control.cpu + t + 64) = u;
 			EmitDispatch(d, kCodeCopy4Scale, t, out_r, s->dims[kOutput][0], s->dims[kOutput][1], compute_ring);
 		} else if (scaled) {
-			WriteScaleTable(t, g_dev.hlx[kOutput], out_r.w, out_r.h, s->res[kOutput].t, s->dims[kOutput][0], s->dims[kOutput][1]);
+			WriteScaleTable(t, g_dev.hlx[kOutput], hlx_w, hlx_h, s->res[kOutput].t, s->dims[kOutput][0], s->dims[kOutput][1],
+			                taa_scaled ? s->Field<float>(0x72c) : 1.0f, taa_scaled ? 1.0f : 0.0f);
 			EmitDispatch(d, kCodeScale4A0, t, out_r, s->dims[kOutput][0], s->dims[kOutput][1], compute_ring, 64);
 		} else {
 			WriteCopyTable(t, g_dev.hlx[kOutput], s->res[kOutput].t);
@@ -4238,8 +4290,15 @@ bool TakeBoundary(uint64_t packet, uint64_t shader, bool compute_ring, Boundary*
 		}
 		if (s->raster_history.present && table < kTablesPerSlot) {
 			const uint64_t ht = kTables + (slot * kTablesPerSlot + table++) * 64u;
-			WriteCopyTable(ht, g_dev.hlx[kOutput], s->raster_history.t);
-			EmitDispatch(d, kCodeCopy4A1, ht, out_r, s->dims[kOutput][0], s->dims[kOutput][1], compute_ring);
+			if (scaled) {
+				++table;
+				WriteScaleTable(ht, g_dev.hlx[kOutput], hlx_w, hlx_h, s->raster_history.t,
+				                s->dims[kOutput][0], s->dims[kOutput][1], 1.0f, 1.0f);
+				EmitDispatch(d, kCodeScale4A0, ht, out_r, s->dims[kOutput][0], s->dims[kOutput][1], compute_ring, 64);
+			} else {
+				WriteCopyTable(ht, g_dev.hlx[kOutput], s->raster_history.t);
+				EmitDispatch(d, kCodeCopy4A1, ht, out_r, s->dims[kOutput][0], s->dims[kOutput][1], compute_ring);
+			}
 			// If the helper fails after the draw was replaced, provide a current spatial frame. The next frame
 			// resumes the original TAA; its history was kept current by the successful HLX writes above.
 			const uint64_t fallback = kPassthroughTables + slot * 128u;
@@ -4326,6 +4385,7 @@ bool TakeComposite(uint64_t packet, uint64_t ps, const uint32_t* ud, uint32_t ud
 	const uint32_t width = scene.Width5() + 1u, height = scene.Height5() + 1u;
 	const auto render = LevelSize(g_level.load());
 	if (width != render.first || height != render.second) return false;
+	if (HdmiHeight() && (width > g_dev.region[kOutput].w || height > g_dev.region[kOutput].h)) return false;
 	const uint64_t root = (static_cast<uint64_t>(ud[0]) | (static_cast<uint64_t>(ud[1]) << 32u)) & 0xffffffffffffull;
 	uint64_t pointers[2] {};
 	uint32_t globals[24] {};
