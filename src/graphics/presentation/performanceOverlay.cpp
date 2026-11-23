@@ -3,6 +3,7 @@
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
 #include "common/hostStats.h"
+#include "common/performanceDisplay.h"
 #include "common/performanceMetrics.h"
 #include "graphics/native_gpu/nativeUpscaler.h"
 #include <cstdlib>
@@ -517,12 +518,20 @@ bool ExternalFrameGeneration() {
 	       (disabled == nullptr || disabled[0] == '0' || disabled[0] == '\0');
 }
 
+// Values are rounded once for both text and severity.
+void PerformanceValue(std::optional<double> value, const char* suffix, double warn, double bad) {
+    using namespace Common::PerformanceDisplay;
+    const auto severity = Classify(value, warn, bad);
+    const ImU32 color = severity == Severity::Good ? GOOD : severity == Severity::Warning ? MEDIUM :
+                        severity == Severity::Bad ? BAD : NEUTRAL;
+    ImGui::SameLine(0, 0);
+    if (Valid(value)) ImGui::TextColored(Color(color), "%.0f%s", std::round(*value), suffix);
+    else ImGui::TextColored(Color(NEUTRAL), "N/A");
+}
+
 void DrawPerformance(const Snapshot& shown, vk::Extent2D extent, float scale) {
 	const auto& metrics = shown.performance;
 	const auto& host = shown.host;
-	const auto temperature = [](const std::optional<double>& value) {
-		return value ? Fmt("%.0f°C", *value) : std::string("N/A");
-	};
 	const bool external = ExternalFrameGeneration();
 	const std::string low = metrics.low_fps ? Fmt("%.1f", *metrics.low_fps) : "collecting";
 	const std::string presented = external ? "N/A" : Fmt("%.1f", metrics.presented_fps);
@@ -534,25 +543,31 @@ void DrawPerformance(const Snapshot& shown, vk::Extent2D extent, float scale) {
 		vram = Fmt("%.0f / %.0f MiB (%.0f%%)", *host.vram_used / 1048576.0,
 		           *host.vram_total / 1048576.0, 100.0 * *host.vram_used / *host.vram_total);
 	}
-	const std::string clock = host.gpu_clock_mhz ? std::to_string(*host.gpu_clock_mhz) : "N/A";
-	ImGui::Text("GPU %s   %s MHz   VRAM %s   %s", Percent(host.gpu_percent).c_str(), clock.c_str(), vram.c_str(),
-	            temperature(host.gpu_temperature).c_str());
-	ImGui::Text("CPU %s   %s", Percent(host.system_cpu_percent).c_str(), temperature(host.cpu_temperature).c_str());
-	std::string row;
-	unsigned columns = 0;
-	for (const auto& cpu: host.cpu_usage) {
-		const auto cell = Fmt("CPU%u %s", cpu.id, Percent(cpu.percent).c_str());
-		const auto combined = row.empty() ? cell : row + "  " + cell;
-		if (!row.empty() && (columns == Common::Performance::CpuColumns || ImGui::CalcTextSize(combined.c_str()).x > max_width)) {
-			ImGui::TextUnformatted(row.c_str());
-			row.clear();
-			columns = 0;
-		}
-		if (!row.empty()) row += "  ";
-		row += cell;
-		++columns;
-	}
-	if (!row.empty()) ImGui::TextUnformatted(row.c_str());
+    ImGui::TextUnformatted("GPU ");
+    PerformanceValue(host.gpu_percent, "%", 94, 98);
+    ImGui::SameLine(0, 0);
+    const std::string clock = host.gpu_clock_mhz ? std::to_string(*host.gpu_clock_mhz) : "N/A";
+    ImGui::Text("   %s MHz   VRAM %s", clock.c_str(), vram.c_str());
+    ImGui::TextUnformatted("CPU ");
+    PerformanceValue(host.system_cpu_percent, "%", 70, 90);
+    ImGui::SameLine(0, 0);
+    const auto busiest = Common::PerformanceDisplay::BusiestCpu(host.cpu_usage);
+    if (busiest) {
+        ImGui::Text("   MAX CORE_%u ", busiest->id);
+        PerformanceValue(busiest->percent, "%", 70, 90);
+    } else {
+        ImGui::TextUnformatted("   MAX CORE ");
+        PerformanceValue(std::nullopt, "%", 70, 90);
+    }
+    ImGui::NewLine();
+    const auto ram = Common::PerformanceDisplay::RamPercent(host.system_memory_used, host.system_memory_total);
+    ImGui::Text("System RAM %s / %s (",
+                host.system_memory_used ? Bytes(*host.system_memory_used).c_str() : "N/A",
+                host.system_memory_total ? Bytes(*host.system_memory_total).c_str() : "N/A");
+    PerformanceValue(ram, "%", 70, 96);
+    ImGui::SameLine(0, 0);
+    ImGui::TextUnformatted(")");
+    ImGui::Text("Emulator RAM %s", host.process_memory ? Bytes(*host.process_memory).c_str() : "N/A");
 	const auto& rendering = metrics.rendering;
 	ImGui::Text("Upscaler %s   Preset %s", rendering.upscaler.c_str(), rendering.preset.c_str());
 	const auto size = [](uint32_t w, uint32_t h) {
@@ -576,6 +591,17 @@ void DrawPerformance(const Snapshot& shown, vk::Extent2D extent, float scale) {
 		ImGui::Text("Frame Generation Off%s%s", reason.empty() ? "" : " — ", reason.c_str());
 	}
 	ImGui::Text("Session time %s", Common::Performance::SessionTime(metrics.session_seconds).c_str());
+    ImGui::NewLine();
+    ImGui::TextUnformatted("Temperatures:");
+    ImGui::TextUnformatted("GPU ");
+    PerformanceValue(host.gpu_temperature, "°C", 75, 81);
+    ImGui::SameLine(0, 0);
+    ImGui::TextUnformatted(" | CPU ");
+    PerformanceValue(host.cpu_temperature, "°C", 75, 85);
+    ImGui::SameLine(0, 0);
+    ImGui::TextUnformatted(" | VRAM ");
+    PerformanceValue(host.vram_temperature, "°C", 60, 75);
+
 	ImGui::PopTextWrapPos();
 }
 

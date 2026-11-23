@@ -413,7 +413,7 @@ std::vector<std::filesystem::path> SensorEntries(const std::filesystem::path& pa
 	return result;
 }
 
-std::optional<double> ReadTemperature(const std::filesystem::path& hwmon, bool cpu) {
+std::optional<double> ReadTemperature(const std::filesystem::path& hwmon, bool cpu, bool memory = false) {
 	std::optional<double> fallback;
 	for (const auto& directory: SensorEntries(hwmon)) {
 		const auto name = ReadSensor(directory / "name");
@@ -424,6 +424,10 @@ std::optional<double> ReadTemperature(const std::filesystem::path& hwmon, bool c
 			const auto value = HostStatsLinux::Temperature(ReadSensor(path));
 			if (!value) continue;
 			const auto label = ReadSensor(directory / (filename.substr(0, filename.size() - 6) + "_label"));
+			if (memory) {
+				if (HostStatsLinux::IsMemoryTemperatureLabel(label)) return value;
+				continue;
+			}
 			if (cpu) {
 				if (label == "Tdie" || label.rfind("Package id", 0) == 0) return value;
 				if (label == "Tctl") fallback = value;
@@ -450,6 +454,7 @@ void SampleHardware(PlatformState& state, HostStats& stats) {
 		stats.vram_used = HostStatsLinux::ParseUnsigned(ReadSensor(path / "mem_info_vram_used"));
 		stats.vram_total = HostStatsLinux::ParseUnsigned(ReadSensor(path / "mem_info_vram_total"));
 		stats.gpu_temperature = ReadTemperature(path / "hwmon", false);
+		stats.vram_temperature = ReadTemperature(path / "hwmon", false, true);
 		for (const auto& sensor: SensorEntries(path / "hwmon")) {
 			if (ReadSensor(sensor / "name") != "amdgpu") continue;
 			stats.gpu_clock_mhz = HostStatsLinux::ClockMHz(ReadSensor(sensor / "freq1_input"));
@@ -470,6 +475,7 @@ void SampleHardware(PlatformState& state, HostStats& stats) {
 	missing(stats.vram_used.has_value() && stats.vram_total.value_or(0) > 0, "VRAM");
 	missing(stats.gpu_temperature.has_value(), "GPU temperature");
 	missing(stats.cpu_temperature.has_value(), "CPU temperature");
+	missing(stats.vram_temperature.has_value(), "VRAM temperature");
 }
 
 void SampleThreads(HostStats& stats, Counters& now) {
