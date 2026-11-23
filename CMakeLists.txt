@@ -411,6 +411,10 @@ add_executable(performance_metrics_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/Per
 target_include_directories(performance_metrics_tests PRIVATE "${KYTY_SOURCE_DIR}")
 add_test(NAME performance_metrics_tests COMMAND performance_metrics_tests)
 
+add_executable(game_frame_pacer_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/GameFramePacerTests.cpp")
+target_include_directories(game_frame_pacer_tests PRIVATE "${KYTY_SOURCE_DIR}")
+add_test(NAME game_frame_pacer_tests COMMAND game_frame_pacer_tests)
+
 add_executable(build_flags_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/BuildFlagsTests.cpp")
 
 add_executable(page_manager_tests EXCLUDE_FROM_ALL

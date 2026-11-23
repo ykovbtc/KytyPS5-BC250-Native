@@ -386,15 +386,23 @@ fi
 case "${selected##*/}" in
     kyty_emulator_astro|kyty_emulator_audio|kyty_emulator_guard|kyty_emulator_fast|kyty_emulator_fast_guard)
         args=()
-        for arg in "$@"; do
-            case "$arg" in
+        while (($#)); do
+            case "$1" in
+                --guest-exec) args+=("$@"); break ;;
                 --native-rt)
                     echo '[Kyty launcher] The selected legacy backend does not support native ray tracing.' >&2 ;;
+                --max-game-fps)
+                    if [[ "${2:-}" != 0 ]]; then
+                        echo '[Kyty launcher] This legacy backend cannot enforce Maximum game FPS. Use the current native backend or set the limit to Off.' >&2
+                        exit 78
+                    fi
+                    shift ;;
                 --launch-activity)
                     echo '[Kyty launcher] The selected legacy backend cannot launch activities. Use a current native or upscaler backend.' >&2
                     exit 78 ;;
-                *) args+=("$arg") ;;
+                *) args+=("$1") ;;
             esac
+            shift
         done
         set -- "${args[@]}"
         ;;
