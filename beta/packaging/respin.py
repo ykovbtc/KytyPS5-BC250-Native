@@ -36,7 +36,6 @@ OVERLAY = {
     'beta/packaging/AppRun': 'AppRun',
     'beta/packaging/prepare-runtime.py': 'prepare-runtime.py',
     'beta/packaging/session-hdr.py': 'session-hdr.py',
-    'beta/packaging/session-hdmi.py': 'session-hdmi.py',
     'beta/gaming-mode-original/ps5-labwc': 'system/session/ps5-labwc',
     'beta/gaming-mode-original/ps5-minimal-compositor': 'system/session/ps5-minimal-compositor',
     'beta/gaming-mode-original/rc.xml': 'system/session/rc.xml',

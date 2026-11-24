@@ -1,14 +1,10 @@
-#include "common/bc250VramTemperature.h"
 #include "common/performanceMetrics.h"
 #include "common/hostStatsLinux.h"
 #include "common/performanceDisplay.h"
 #include <limits>
-#include "graphics/native_gpu/upscaler/hlxOutputSize.h"
 
 #include <cstdio>
 #include <cstdlib>
-#include <filesystem>
-#include <fstream>
 #include <sstream>
 
 using namespace Common::Performance;
@@ -19,54 +15,6 @@ static void Check(bool ok, const char* message) {
 		std::fprintf(stderr, "FAIL: %s\n", message);
 		std::exit(1);
 	}
-}
-
-
-static void CheckBc250VramTemperature() {
-	using Common::HostStatsLinux::Bc250VramTemperature;
-	namespace fs = std::filesystem;
-	const auto now = Bc250VramTemperature::Clock::now();
-	const auto hwmon = fs::temp_directory_path() /
-	                   ("kyty-bc250-hwmon-" + std::to_string(now.time_since_epoch().count()));
-	Check(fs::create_directory(hwmon), "create private hwmon fixture");
-	const auto sensor = hwmon / "hwmon7";
-	fs::create_directory(sensor);
-	const auto write = [&](const char* file, const char* value) {
-		Check(bool(std::ofstream(sensor / file) << value << '\n'), "write hwmon fixture");
-	};
-	Bc250VramTemperature vram;
-	write("name", "amdgpu");
-	write("temp1_label", "VRAM Hotspot");
-	write("temp1_input", "79000");
-	Check(!vram.Sample(hwmon, now, 1), "ignore a different hwmon driver");
-	write("name", "bc250_memory");
-	write("temp1_label", "VRAM Average");
-	Check(!vram.Sample(hwmon, now + 5s, 1), "require the VRAM Hotspot channel");
-	write("temp1_label", "VRAM Hotspot");
-	Check(!vram.Sample(hwmon, now + 6s, 1), "rate limit missing sensor discovery");
-	Check(!vram.Sample(hwmon, now + 10s, 0), "inactive monitoring does not sample");
-	Check(vram.Sample(hwmon, now + 10s, 2) == 79.0, "read the hottest GDDR6 chip");
-
-	write("temp1_input", "broken");
-	Check(vram.Sample(hwmon, now + 14s, 2) == 79.0, "reuse the prior reading before five seconds");
-	Check(!vram.Sample(hwmon, now + 15s, 2), "invalid read clears the prior temperature");
-	fs::remove(sensor / "temp1_input");
-	Check(!vram.Sample(hwmon, now + 20s, 2), "missing input stays unavailable");
-	write("temp1_input", "80500");
-	Check(vram.Sample(hwmon, now + 25s, 2) == 80.5, "re-discover a working sensor");
-	Check(!vram.Sample(hwmon, now + 26s, 0), "leaving Performance clears the cached reading");
-	Check(!vram.Sample(hwmon, now + 27s, 3), "re-entering Performance preserves the rate limit");
-	Check(vram.Sample(hwmon, now + 30s, 3) == 80.5, "resume polling after the rate limit");
-	Check(!vram.Sample(hwmon, now + 31s, 4), "session changes clear cache even between samples");
-
-	const auto moved = hwmon / "hwmon12";
-	fs::rename(sensor, moved);
-	fs::create_directory(sensor);
-	write("name", "amdgpu");
-	write("temp1_input", "45000");
-	Check(vram.Sample(hwmon, now + 35s, 4) == 80.5, "find the driver after a hwmon index change");
-	fs::remove_all(hwmon);
-	Check(!vram.Sample(hwmon, now + 40s, 4), "missing hwmon tree is handled without throwing");
 }
 
 int main() {
@@ -171,19 +119,9 @@ int main() {
     Check(BusiestCpu(cpus)->id == 22, "new CPU can become busiest");
     Check(!BusiestCpu({}) && !BusiestCpu({{0, std::nullopt}, {1, -1.}, {2, 101.}}),
           "no valid CPU samples");
-	CheckBc250VramTemperature();
 	Check(ClockMHz("2000000000") == 2000 && !ClockMHz("0") && !ClockMHz("bad"), "AMDGPU graphics clock in Hz");
 	std::istringstream clocks("0: 500Mhz\n1: 2000Mhz *\n2: 2200Mhz\n");
 	std::istringstream inactive("0: 500Mhz\n1: 2200Mhz\n");
 	Check(ActiveClockMHz(clocks) == 2000 && !ActiveClockMHz(inactive), "only the active graphics DPM level");
-	using NativeUpscaler::HlxHeightLimit;
-	using NativeUpscaler::LimitHlxExtent;
-	Check(HlxHeightLimit(1440, 1800) == 1440 && HlxHeightLimit(2160, 1080) == 1080 &&
-	      HlxHeightLimit(0, 1800) == 1800 && HlxHeightLimit(0, 0) == 2160, "HDMI and HLX target precedence");
-	Check(LimitHlxExtent(3840, 2160, 1440) == std::pair{2560u, 1440u} &&
-	      LimitHlxExtent(3840, 2160, 1080) == std::pair{1920u, 1080u} &&
-	      LimitHlxExtent(1920, 1080, 2160) == std::pair{1920u, 1080u}, "bound reconstruction without enlarging the title output");
-	Check(NativeUpscaler::HlxDispatchExtent(3840, 2160, 2560, 1440) == std::pair{2560u, 1440u} &&
-	      NativeUpscaler::HlxDispatchExtent(1920, 1080, 2560, 1440) == std::pair{1920u, 1080u}, "helper wire dimensions track the active rectangle");
 	std::puts("Performance metrics tests passed");
 }

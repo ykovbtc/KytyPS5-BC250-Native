@@ -3,9 +3,6 @@
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
 #include "common/hostStats.h"
-#if defined(__linux__)
-#include "common/bc250VramTemperature.h"
-#endif
 #include "common/performanceDisplay.h"
 #include "common/performanceMetrics.h"
 #include "graphics/native_gpu/nativeUpscaler.h"
@@ -160,14 +157,6 @@ std::atomic<uint64_t> g_revision {0};
 std::mutex                  g_host_mutex;
 Common::HostStats           g_host_stats;
 uint64_t                    g_host_generation = 0;
-#if defined(__linux__)
-uint64_t                    g_vram_session = 1;
-
-void InvalidateVramTemperature() {
-	++g_vram_session;
-	g_host_stats.vram_temperature.reset();
-}
-#endif
 std::condition_variable_any g_sampler_wait;
 std::jthread                g_sampler;
 
@@ -181,11 +170,6 @@ void SetOverlayEnabled(bool enabled) {
 			Common::Performance::metrics.ResetFrames(Clock::now());
 			g_generation.fetch_add(1, std::memory_order_release);
 		}
-#if defined(__linux__)
-		if (!enabled) {
-			InvalidateVramTemperature();
-		}
-#endif
 		Common::DebugCounters::SetEnabled(enabled);
 	}
 	g_sampler_wait.notify_all();
@@ -201,10 +185,6 @@ bool GuestStalled(Clock::time_point now) {
 // interval.
 void SamplerThread(const std::stop_token& stop) {
 	std::optional<Common::HostStatsSampler> sampler;
-#if defined(__linux__)
-	Common::HostStatsLinux::Bc250VramTemperature vram;
-	bool reported_missing_vram = false;
-#endif
 	uint64_t                                sampled_generation = 0;
 	std::unique_lock                        lock(g_host_mutex);
 	while (!stop.stop_requested()) {
@@ -213,28 +193,13 @@ void SamplerThread(const std::stop_token& stop) {
 			break;
 		}
 		const auto generation = g_generation.load(std::memory_order_acquire);
-#if defined(__linux__)
-		const auto vram_session = g_visible_mode.load(std::memory_order_acquire) == 3 ? g_vram_session : 0;
-#endif
 		lock.unlock();
 		if (!sampler || generation != sampled_generation) {
 			sampler.emplace();
 			sampled_generation = generation;
 		}
 		auto stats = sampler->Sample();
-#if defined(__linux__)
-		stats.vram_temperature = vram.Sample("/sys/class/hwmon", Clock::now(), vram_session);
-		if (vram_session != 0 && !stats.vram_temperature && !reported_missing_vram) {
-			std::fprintf(stderr, "performance: BC-250 VRAM temperature unavailable from bc250_memory hwmon\n");
-			reported_missing_vram = true;
-		}
-#endif
 		lock.lock();
-#if defined(__linux__)
-		if (vram_session != g_vram_session || !Common::DebugCounters::Enabled()) {
-			stats.vram_temperature.reset();
-		}
-#endif
 		g_host_stats      = std::move(stats);
 		g_host_generation = generation;
 		if (Common::DebugCounters::Enabled() && GuestStalled(Clock::now())) {
@@ -633,10 +598,6 @@ void DrawPerformance(const Snapshot& shown, vk::Extent2D extent, float scale) {
     ImGui::SameLine(0, 0);
     ImGui::TextUnformatted(" | CPU ");
     PerformanceValue(host.cpu_temperature, "°C", 75, 85);
-    ImGui::SameLine(0, 0);
-    ImGui::TextUnformatted(" | VRAM ");
-    PerformanceValue(host.vram_temperature, "°C", 60, 75);
-
 	ImGui::PopTextWrapPos();
 }
 
@@ -922,16 +883,7 @@ int PerformanceOverlayMode() noexcept {
 
 void SetPerformanceOverlayMode(int mode) noexcept {
 	if (!Common::Performance::ValidMode(mode)) return;
-	if (mode != 0) {
-#if defined(__linux__)
-		std::scoped_lock lock(g_host_mutex);
-		const int previous = g_visible_mode.load(std::memory_order_relaxed);
-		if ((previous == 3) != (mode == 3)) {
-			InvalidateVramTemperature();
-		}
-#endif
-		g_visible_mode.store(mode, std::memory_order_release);
-	}
+	if (mode != 0) g_visible_mode.store(mode, std::memory_order_release);
 	if ((mode != 0) != Common::DebugCounters::Enabled()) SetOverlayEnabled(mode != 0);
 	g_revision.fetch_add(1, std::memory_order_acq_rel);
 }

@@ -181,11 +181,6 @@ keep using KytyPS5. Saves and settings stay.
 
 ## Upscaling and frame generation
 
-The Performance overlay can show the hottest GDDR6 chip on the BC-250. This reading requires the optional
-[bc250_memory hwmon driver](https://github.com/Hexxeh/bc250-memory-dkms) to be loaded on the Linux host.
-KytyPS5 reads the sensor at most once every five seconds in Performance mode and shows `VRAM N/A` when
-the reading is unavailable.
-
 Set these per game in the launcher (**game → Settings → Upscaling / Frame generation**), or globally in Settings.
 The [tested games](#tested-games) start with their tested choice.
 
