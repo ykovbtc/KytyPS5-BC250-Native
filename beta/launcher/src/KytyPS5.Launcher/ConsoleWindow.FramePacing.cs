@@ -51,6 +51,8 @@ internal sealed partial class ConsoleWindow
     {
         const string id = "max_game_fps";
         var fps = FpsLimit.Read(_values[id]);
+        var remembered = fps > 0 ? fps : FpsLimit.Read(_values.GetValueOrDefault("last_game_fps"));
+        if (remembered == 0) remembered = FpsLimit.Default;
         var toggle = Setting("FPS limit", fps == 0 ? "Off" : "On");
         var row = Setting("Maximum game FPS", "", "20–120 FPS. Hold − or + to adjust continuously.");
         _fpsRow = row;
@@ -73,19 +75,21 @@ internal sealed partial class ConsoleWindow
         void Render()
         {
             UpdateRowValue(toggle, fps == 0 ? "Off" : "On");
-            number.Text = (fps == 0 ? FpsLimit.Default : fps).ToString(CultureInfo.InvariantCulture);
+            number.Text = remembered.ToString(CultureInfo.InvariantCulture);
             minus.IsEnabled = fps > FpsLimit.Minimum;
             plus.IsEnabled = fps > 0 && fps < FpsLimit.Maximum;
         }
         void Save(int next)
         {
-            if (next == fps || !SaveValue(id, next.ToString(CultureInfo.InvariantCulture))) return;
+            var last = next > 0 ? next : remembered;
+            if (next == fps || !SaveValue(id, next.ToString(CultureInfo.InvariantCulture), last.ToString(CultureInfo.InvariantCulture))) return;
+            remembered = last;
             fps = next;
             Render();
         }
-        void Toggle() => Save(fps == 0 ? FpsLimit.Default : 0);
+        void Toggle() => Save(fps == 0 ? remembered : 0);
         toggle.Click += (_, _) => Toggle();
-        _adjust[toggle] = direction => Save(direction < 0 ? 0 : fps == 0 ? FpsLimit.Default : fps);
+        _adjust[toggle] = direction => Save(direction < 0 ? 0 : remembered);
         _adjust[row] = direction => Save(FpsLimit.Step(fps, direction));
         content.Children.Add(toggle);
         content.Children.Add(row);

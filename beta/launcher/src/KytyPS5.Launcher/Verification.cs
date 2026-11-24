@@ -45,6 +45,14 @@ internal static class Verification
                     "Game cap " + expected + " with a 60 Hz virtual display");
             }
             CheckCap("55");
+            var token = KytyBridge.Build(eboot, game.TitleId).Environment["KYTYPS5_PACING_TOKEN"]!;
+            KytyBridge.MergeValue(game.TitleId, eboot, "customField", "keep");
+            KytyBridge.SaveLiveFps(game.TitleId, eboot, token, "KYTYPS5_FRAME_PACING wrong-session 21");
+            CheckCap("55");
+            KytyBridge.SaveLiveFps(game.TitleId, eboot, token, $"KYTYPS5_FRAME_PACING {token} 50");
+            CheckCap("50");
+            Check(KytyBridge.Load(game.TitleId, eboot)["customField"] == "keep" && KytyBridge.Load(null, null)["max_game_fps"] == "55",
+                "Live edits merge into the running game's profile and preserve its global default");
             KytyBridge.Save(game.TitleId, eboot, new Dictionary<string, string> { ["max_game_fps"] = "48" });
             CheckCap("48");
             foreach (var (stored, expected) in new[] { ("1", "20"), ("360", "120") })

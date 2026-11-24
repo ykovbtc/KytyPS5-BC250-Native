@@ -175,8 +175,13 @@ internal sealed partial class ConsoleWindow
             Check(_values["max_game_fps"] == "59", "One left tap subtracts one FPS");
             Navigate(PadAction.Right); Navigate(PadAction.Right);
             Check(_values["max_game_fps"] == "61", "Each right tap adds one FPS");
-            Navigate(PadAction.Up); Navigate(PadAction.Accept); Navigate(PadAction.Accept);
-            Check(_values["max_game_fps"] == "60", "Re-enabling resets the cap to 60 FPS");
+            for (int tap = 0; tap < 11; tap++) Navigate(PadAction.Left);
+            Navigate(PadAction.Up); Navigate(PadAction.Accept);
+            ShowSettings(Selected, "Frame pacing"); await Task.Delay(100);
+            Check(_values["max_game_fps"] == "0" && _values["last_game_fps"] == "50", "Reloading the profile keeps Off and remembers 50");
+            Focus(_rows[0]); Navigate(PadAction.Accept);
+            Check(_values["max_game_fps"] == "50", "Re-enabling restores 50 FPS");
+            Check(_groups[_category - 1].Id == "Frame Generation", "Frame pacing follows Frame generation");
             ShowSettings(Selected, "Display"); await Capture("screen-video");
             ShowSettings(null, "Audio"); await Task.Delay(150);
             _preferences.Audio.MusicVolume = 15; _preferences.Audio.SoundsVolume = 65; SaveAudio(); SetCategory(_category); await Task.Delay(100);
@@ -210,6 +215,17 @@ internal sealed partial class ConsoleWindow
             BrowseFolder(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), _ => { }); await Capture("folder-browser");
             Navigate(PadAction.Back); Check(_modal is null, "Controller closes folder browser");
             ShowLibrary(); await Capture("library");
+            string? powerCall = null;
+            void FakePower(string tool, string[] args) => powerCall = string.Join(" ", new[] { tool }.Concat(args));
+            void PressModal(string label) => _modalRows.SelectMany(r => r).Single(b => Equals(b.Content, label))
+                .RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Avalonia.Controls.Button.ClickEvent));
+            ShowSystem(FakePower);
+            Check(_modalRows.TakeLast(3).Select(r => r.Single().Content as string)
+                .SequenceEqual(new[] { "Exit KytyPS5", "Restart system", "Shut down" }), "Power menu ordering");
+            PressModal("Restart system"); PressModal("Cancel");
+            Check(powerCall is null, "Cancelling restart issues no command");
+            ShowSystem(FakePower); PressModal("Restart system"); PressModal("Restart system");
+            Check(powerCall == "/usr/bin/systemctl --no-ask-password reboot", "Confirmed restart requests a system reboot");
             ShowSystem(); await Capture("control-centre"); Navigate(PadAction.Back);
             Check(_modal is null, "Controller closes control centre");
             // A stub runtime exercises process supervision and log handling without booting a game.
@@ -221,6 +237,12 @@ internal sealed partial class ConsoleWindow
             for (var i = 0; i < 50 && (_gameProcess is not null || _launching); i++) await Task.Delay(100);
             Check(_gameProcess is null && File.Exists(_logFile), "Session launch, log capture and return to launcher");
             Check(!_audio.Suspended, "Dashboard audio resumes after the game process exits");
+            if (Environment.GetEnvironmentVariable("KYTYPS5_TEST_LIVE_FPS") == "1")
+            {
+                var persisted = KytyBridge.Load(Selected!.TitleId, Selected.Path);
+                Check(persisted["max_game_fps"] == "49" && persisted["last_game_fps"] == "49",
+                    "The final live edit from the runtime stub survives process exit");
+            }
             File.WriteAllText(System.IO.Path.Combine(directory, "result.json"), JsonSerializer.Serialize(new { passed = checks.Count, checks }, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch (Exception error)

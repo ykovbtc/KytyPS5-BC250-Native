@@ -152,6 +152,7 @@ bool     IsNetworkConnected();
 bool     PsnEmulationEnabled();
 uint32_t GetVblankFrequency();
 uint32_t GetMaxGameFps();
+void SetLiveGameFps(uint32_t fps);
 uint32_t GetConsoleLanguage();
 bool     VulkanValidationEnabled();
 

@@ -4,11 +4,13 @@
 #include "common/debugCounters.h"
 
 #include <algorithm>
+#include <atomic>
 #include <memory>
 
 namespace Config {
 
 static std::unique_ptr<ConfigOptions> g_config;
+static std::atomic<uint32_t> g_live_game_fps {0};
 
 void Initialize() {
 	EXIT_IF(g_config != nullptr);
@@ -29,6 +31,7 @@ void Load(const ConfigOptions& cfg) {
 	EXIT_IF(cfg.keyboard_player > static_cast<uint32_t>(MAX_PLAYERS));
 
 	*g_config = cfg;
+	g_live_game_fps.store(cfg.max_game_fps, std::memory_order_relaxed);
 	Common::DebugCounters::SetEnabled(cfg.perf_overlay_enabled);
 }
 
@@ -145,8 +148,12 @@ uint32_t GetVblankFrequency() {
 	return std::clamp(g_config->vblank_frequency, 30u, 360u);
 }
 
+void SetLiveGameFps(uint32_t fps) {
+	g_live_game_fps.store(fps, std::memory_order_relaxed);
+}
+
 uint32_t GetMaxGameFps() {
-	return g_config->max_game_fps;
+	return g_live_game_fps.load(std::memory_order_relaxed);
 }
 
 uint32_t GetConsoleLanguage() {

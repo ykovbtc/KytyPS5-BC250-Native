@@ -1748,6 +1748,7 @@ bool FlipQueue::Flip() {
 	// A direct request is not Kyty's to present (TryDirect sent it or will), but it still holds back
 	// the newer flips of its port until the display completed it (OlderPendingOnPort).
 	uint64_t group = 0;
+	m_game_pacer.SetLimit(Config::GetMaxGameFps());
 	const auto pace_time = m_game_pacer.Enabled() ? GameFramePacer::Clock::now() : GameFramePacer::Clock::time_point {};
 	const bool hold_main = !m_game_pacer.Due(pace_time);
 	for (const auto& owner: m_requests) {
@@ -2011,6 +2012,7 @@ void FlipQueue::PumpDirectLocked(VideoOutConfig& cfg, double now) {
 			it = CompleteDirectLocked(it, now);
 			continue;
 		}
+		m_game_pacer.SetLimit(Config::GetMaxGameFps());
 		const auto pace_time = m_game_pacer.Enabled() ? GameFramePacer::Clock::now() : GameFramePacer::Clock::time_point {};
 		if (!m_direct_failed && !m_game_pacer.Due(pace_time)) {
 			break; // Keep the buffer pending until a later watchdog tick or display event.

@@ -1,4 +1,8 @@
 #include "common/performanceMetrics.h"
+#include "common/emulatorConfig.h"
+#include "graphics/presentation/gameMenuFramePacing.h"
+#include <cstdio>
+#include <cstdlib>
 
 #include "graphics/presentation/gameMenu.h"
 
@@ -22,7 +26,7 @@ namespace {
 
 enum class Page : uint8_t { Closed, Main, Cheats, Upscaling, ConfirmExit };
 
-enum MainItem : int { ItemResume, ItemMonitoring, ItemUpscaling, ItemCheats, ItemExit, MainItemCount };
+using namespace GameMenuFramePacing;
 enum UpscalingItem : int { UpItemUpscaler, UpItemFrameGen, UpItemBack, UpItemCount }; // resolution/preset: per-game settings, before launch
 enum ConfirmItem : int { ConfirmExitGame, ConfirmCancel, ConfirmItemCount };
 
@@ -85,6 +89,14 @@ const char* MonitoringLabel(int mode) {
 		case 3: return "Performance";
 		default: return "Off";
 	}
+}
+
+uint32_t MenuGameFps() {
+	static const bool from_launcher = [] {
+		const char* token = std::getenv("KYTYPS5_PACING_TOKEN");
+		return token != nullptr && *token != '\0';
+	}();
+	return from_launcher ? Config::GetMaxGameFps() : 0;
 }
 
 void StepMonitoring(int step) {
@@ -181,10 +193,21 @@ bool Navigate(int up_down, int left_right, bool accept, bool back) {
 	}
 	if (up_down != 0) {
 		const int count = ItemCount(state.page);
-		state.selected  = (state.selected + up_down + count) % count;
+		state.selected = state.page == Page::Main ? NextItem(state.selected, up_down, MenuGameFps())
+		                                         : (state.selected + up_down + count) % count;
 		SetState(state);
 	} else if (left_right != 0 && state.page == Page::Main && state.selected == ItemMonitoring) {
 		StepMonitoring(left_right);
+	} else if (left_right != 0 && state.page == Page::Main && state.selected == ItemFramePacing) {
+		const auto current = MenuGameFps();
+		const auto next = Step(current, left_right);
+		if (next != current) {
+			Config::SetLiveGameFps(next);
+			g_revision.fetch_add(1, std::memory_order_acq_rel);
+			if (const char* token = std::getenv("KYTYPS5_PACING_TOKEN"); token != nullptr) {
+				std::fprintf(stderr, "KYTYPS5_FRAME_PACING %s %u\n", token, next);
+			}
+		}
 	} else if (left_right != 0 && state.page == Page::Upscaling && NativeUpscaler::TitleSupported()) {
 		StepUpscaling(state.selected, left_right);
 	} else if (accept) {
@@ -321,6 +344,10 @@ void DrawGameMenu(vk::Extent2D extent) {
 		row(ItemUpscaling, "Upscaling", NativeUpscaler::TitleSupported()
 		                                    ? NativeUpscaler::UpscalerName(NativeUpscaler::CurrentSettings().upscaler)
 		                                    : "n/a");
+		if (const auto fps = MenuGameFps(); Available(fps)) {
+			const auto value = "< " + std::to_string(fps) + " FPS >";
+			row(ItemFramePacing, "Frame pacing", value.c_str());
+		}
         row(ItemCheats, "Cheats / Patches", nullptr);
 		row(ItemExit, "Exit game", nullptr);
     } else if (state.page == Page::Upscaling) {

@@ -1,5 +1,7 @@
 #include "graphics/presentation/gameFramePacer.h"
 
+#include "graphics/presentation/gameMenuFramePacing.h"
+
 #include <cstdio>
 
 using Libs::VideoOut::GameFramePacer;
@@ -19,6 +21,13 @@ static int CountFrames(unsigned cap, unsigned refresh, unsigned guest_interval =
 	}
 	return frames;
 }
+
+namespace Menu = Libs::Graphics::GameMenuFramePacing;
+static_assert(Menu::NextItem(Menu::ItemUpscaling, 1, 50) == Menu::ItemFramePacing);
+static_assert(Menu::NextItem(Menu::ItemUpscaling, 1, 0) == Menu::ItemCheats);
+static_assert(Menu::NextItem(Menu::ItemCheats, -1, 0) == Menu::ItemUpscaling);
+static_assert(Menu::Step(50, 1) == 51 && Menu::Step(50, -1) == 49);
+static_assert(Menu::Step(20, -1) == 20 && Menu::Step(120, 1) == 120 && Menu::Step(0, 1) == 0);
 
 int main() {
 	for (auto cap: {48u, 55u}) {
@@ -44,6 +53,12 @@ int main() {
 	if (pacer.Due(now + milliseconds(19)) || !pacer.Due(now + milliseconds(20))) {
 		return 1;
 	}
+	pacer.SetLimit(50);
+	if (pacer.Due(now)) return 1;
+	pacer.SetLimit(120);
+	if (!pacer.Due(now)) return 1;
+	pacer.Advance(now);
+	if (pacer.Due(now + milliseconds(8)) || !pacer.Due(now + milliseconds(9))) return 1;
 	pacer.Reset();
 	return pacer.Due(now) ? 0 : 1;
 }

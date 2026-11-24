@@ -21,9 +21,9 @@ internal sealed partial class ConsoleWindow
     private int _category;
     private readonly (string Id, string Title, string Symbol, string Description)[] _groups = [
         ("Display", "Screen & video", "◫", "Resolution, refresh rate and the way your games are presented."),
-        ("Frame pacing", "Frame pacing", "◷", "Limit real game frames on the native and upscaler backends. Frame generation can add extra displayed frames."),
         ("Upscaling", "Upscaling", "↗", "Choose the reconstruction method and balance image quality with performance."),
         ("Frame Generation", "Frame generation", "▥", "Lossless Scaling frame generation (needs your own Lossless Scaling from Steam)."),
+        ("Frame pacing", "Frame pacing", "◷", "Limit real game frames on the native and upscaler backends. Frame generation can add extra displayed frames."),
         ("Audio", "Audio", "♪", "Background music and interface sounds. Changes take effect immediately."),
         ("BC-250 Renderer", "Native renderer", "◇", "Native GPU translation, memory and descriptor options."),
         ("GPU / Synchronization", "GPU & synchronization", "⇄", "Hardware queues, synchronization and version-specific workarounds."),
@@ -161,14 +161,12 @@ internal sealed partial class ConsoleWindow
     }
     private static void UpdateRowValue(Button row, string value) { if (row.Tag is TextBlock text) text.Text = value + "  ›"; }
 
-    private bool SaveValue(string key, string value)
+    private bool SaveValue(string key, string value, string? rememberedFps = null)
     {
         try
         {
-            var path = KytyBridge.ProfileFile(_settingsGame?.TitleId, _settingsGame?.Path);
-            var stored = File.Exists(path) ? JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(path)) ?? [] : [];
-            stored[key] = value;
-            KytyBridge.Save(_settingsGame?.TitleId, _settingsGame?.Path, stored);
+            KytyBridge.MergeValue(_settingsGame?.TitleId, _settingsGame?.Path, key, value, rememberedFps);
+            if (rememberedFps is not null) _values["last_game_fps"] = rememberedFps;
             _values[key] = value; _saveStatus.Text = "✓  Saved  /  Applies on the next launch";
             return true;
         }

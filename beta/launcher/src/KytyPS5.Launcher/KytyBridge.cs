@@ -159,8 +159,12 @@ internal static class KytyBridge
             if (!File.Exists(file)) continue;
             try
             {
-                foreach (var (key, value) in JsonSerializer.Deserialize<Dictionary<string,string>>(File.ReadAllText(file)) ?? [])
-                    result[key] = value;
+                var layer = JsonSerializer.Deserialize<Dictionary<string,string>>(File.ReadAllText(file));
+                if (layer is null) continue;
+                foreach (var (key, value) in layer) result[key] = value;
+                var active = FpsLimit.Read(layer.GetValueOrDefault("max_game_fps"));
+                if (active > 0)
+                    result["last_game_fps"] = active.ToString(System.Globalization.CultureInfo.InvariantCulture);
             }
             catch (Exception error) { Console.Error.WriteLine($"[KytyBridge] Invalid options {file}: {error.Message}"); }
         }
@@ -282,6 +286,30 @@ internal static class KytyBridge
             return null;
         var file = Path.Combine(bundle, "title-defaults", titleId + ".json");
         return File.Exists(file) ? file : null;
+    }
+
+    internal static void SaveLiveFps(string? titleId, string gamePath, string token, string line)
+    {
+        var prefix = "KYTYPS5_FRAME_PACING " + token + " ";
+        if (!line.StartsWith(prefix, StringComparison.Ordinal)) return;
+        var value = line[prefix.Length..];
+        var fps = FpsLimit.Read(value);
+        if (fps == 0 || fps.ToString(System.Globalization.CultureInfo.InvariantCulture) != value) return;
+        MergeValue(titleId, gamePath, "max_game_fps", value, value);
+    }
+
+    private static readonly object ProfileWriteLock = new();
+
+    public static void MergeValue(string? titleId, string? gamePath, string key, string value, string? rememberedFps = null)
+    {
+        lock (ProfileWriteLock)
+        {
+            var path = ProfileFile(titleId, gamePath);
+            var stored = File.Exists(path) ? JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(path)) ?? [] : new Dictionary<string, string>();
+            stored[key] = value;
+            if (rememberedFps is not null) stored["last_game_fps"] = rememberedFps;
+            Save(titleId, gamePath, stored);
+        }
     }
 
     public static void Save(string? titleId, string? gamePath, IReadOnlyDictionary<string, string> values)
@@ -555,6 +583,7 @@ internal static class KytyBridge
         // The selector needs the title for archived games too, before it strips renderer overrides.
         if (GameArchive.IsArchive(ebootPath) && !string.IsNullOrWhiteSpace(titleId))
             env["KYTY_BC250_TITLE_ID"] = titleId;
+        env["KYTYPS5_PACING_TOKEN"] = Value("max_game_fps") != "0" ? Guid.NewGuid().ToString("N") : null;
         return new Command(exe, args, env);
     }
 }

@@ -439,7 +439,16 @@ internal sealed partial class ConsoleWindow : Window
                 if (args.Data is null) return;
                 lock (writer) { writer.WriteLine(args.Data); _logLines.Enqueue(args.Data); while (_logLines.Count > 150) _logLines.Dequeue(); }
             }
-            process.OutputDataReceived += Log; process.ErrorDataReceived += Log;
+            var pacingToken = command.Environment.GetValueOrDefault("KYTYPS5_PACING_TOKEN");
+            void ErrorLog(object sender, DataReceivedEventArgs args)
+            {
+                Log(sender, args);
+                if (string.IsNullOrEmpty(pacingToken) || args.Data is null) return;
+                try { KytyBridge.SaveLiveFps(game.TitleId, game.Path, pacingToken, args.Data); }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
+                { lock (writer) writer.WriteLine("Could not save live FPS limit: " + error.Message); }
+            }
+            process.OutputDataReceived += Log; process.ErrorDataReceived += ErrorLog;
             if (!process.Start()) throw new IOException("Could not start the native runtime.");
             _launching = false;
             process.BeginOutputReadLine(); process.BeginErrorReadLine();
@@ -447,7 +456,7 @@ internal sealed partial class ConsoleWindow : Window
             await process.WaitForExitAsync();
             process.WaitForExit();
             var code = process.ExitCode;
-            process.OutputDataReceived -= Log; process.ErrorDataReceived -= Log;
+            process.OutputDataReceived -= Log; process.ErrorDataReceived -= ErrorLog;
             if (!_closing) await RestoreDashboardSdrAsync();
             process.Dispose(); _gameProcess = null;
             _inputTimer.Interval = TimeSpan.FromMilliseconds(33);

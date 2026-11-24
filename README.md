@@ -185,9 +185,9 @@ Set these per game in the launcher (**game → Settings → Upscaling / Frame ge
 The [tested games](#tested-games) start with their tested choice.
 
 **Frame pacing → Maximum game FPS** caps real game frames on the current native and upscaler backends.
-Turn **FPS limit** on to start at 60 FPS. Use **−** and **+**, or press Left and Right, to adjust between 20 and 120 FPS.
+Turn **FPS limit** on to restore the last value (60 FPS on first use). Use **−** and **+**, or press Left and Right, to adjust between 20 and 120 FPS.
 A tap changes the limit by 1 FPS. Hold for 400 ms to repeat five times per second. For Ghost of Yōtei,
-you can keep Performance mode and a 60 Hz virtual display and select 48 or 55 FPS. Changes apply on the next launch.
+you can keep Performance mode and a 60 Hz virtual display and select 48 or 55 FPS. Launcher changes apply on the next launch. With the limit enabled, **PS button → Frame pacing** adjusts it immediately with Left and Right and saves the new value for this game.
 Frame generation can still add displayed frames. To measure the cap on its own, turn off native and Lossless
 frame generation. The emulator also accepts `--max-game-fps 48` on the command line.
 

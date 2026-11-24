@@ -8,7 +8,15 @@ mkdir -p "$out/config" "$out/profiles" "$out/game/sce_sys" "$out/data"
 printf '%s\n' '{"titleId":"PPSA00000","contentVersion":"01.000.000","localizedParameters":{"en-US":{"titleName":"Beta packaging fixture"}}}' > "$out/game/sce_sys/param.json"
 printf 'fixture\n' > "$out/game/eboot.bin"
 printf '{"GameFolders":["%s/game"],"Fullscreen":false}\n' "$out" > "$out/config/launcher.json"
-printf '#!/bin/sh\necho "Isolated runtime stub"\nsleep 2\n' > "$out/runtime-stub"
+cat > "$out/runtime-stub" <<'STUB'
+#!/bin/sh
+echo "Isolated runtime stub"
+sleep 2
+if [ -n "${KYTYPS5_PACING_TOKEN:-}" ]; then
+    echo "KYTYPS5_FRAME_PACING $KYTYPS5_PACING_TOKEN 49" >&2
+fi
+STUB
+export KYTYPS5_TEST_LIVE_FPS=1
 chmod +x "$out/runtime-stub"
 export KYTYPS5_CONFIG_ROOT="$out/config" KYTYPS5_PROFILE_ROOT="$out/profiles" KYTYPS5_DATA_ROOT="$out/data"
 export KYTYPS5_AUDIO_ROOT="$out/audio" KYTYPS5_UI_SMOKE_DIR="$out" KYTY_SHARP_EMULATOR="$out/runtime-stub"

@@ -234,7 +234,9 @@ internal sealed partial class ConsoleWindow
         }
     }
 
-    private void ShowSystem()
+    private void ShowSystem() => ShowSystem(StartTool);
+
+    private void ShowSystem(Action<string, string[]> runPowerCommand)
     {
         var stack = BeginModal("Control centre", _gameProcess is null ? "KytyPS5  /  Ready to play" : "A game session is running.");
         var items = new List<(string, Action)> { ("Back", CloseModal), ("Global settings", () => { CloseModal(); ShowSettings(null); }),
@@ -244,6 +246,9 @@ internal sealed partial class ConsoleWindow
         if (File.Exists((Environment.GetEnvironmentVariable("KYTYPS5_SESSION_CONTROL") ?? "/var/lib/kyty-beta-system/session/ps5-minimal-control")))
             ModalButtons(stack, ("Return to Desktop Mode", () => Confirm("Return to Desktop Mode?", "Save your game first. The PS5 session will close and KDE will open.", "Switch to desktop", () => StartTool("/usr/bin/pkexec", (Environment.GetEnvironmentVariable("KYTYPS5_SESSION_CONTROL") ?? "/var/lib/kyty-beta-system/session/ps5-minimal-control"), "desktop"))));
         ModalButtons(stack, ("Exit KytyPS5", () => Confirm("Exit KytyPS5?", _gameProcess is null ? "Close the launcher?" : "The running game will be stopped.", "Exit", () => { StopGame(); _closing = true; Close(); })));
+        ModalButtons(stack, ("Restart system", () => Confirm("Restart the system?",
+            "The computer will restart and any running game will close. Save your progress first.",
+            "Restart system", () => runPowerCommand("/usr/bin/systemctl", ["--no-ask-password", "reboot"]))));
         ModalButtons(stack, ("Shut down", () => Confirm("Shut down the system?",
             _gameProcess is null ? "The computer will power off." : "Save your game first. The computer will power off.",
             "Shut down", () => StartTool("/usr/bin/systemctl", "--no-ask-password", "poweroff"))));
