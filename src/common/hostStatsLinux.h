@@ -1,7 +1,6 @@
 #pragma once
 
 #include <algorithm>
-#include <cctype>
 #include <cstdint>
 #include <optional>
 #include <sstream>
@@ -40,14 +39,6 @@ inline std::optional<uint64_t> ParseUnsigned(const std::string& text) {
 	stream >> std::ws;
 	if (!stream.eof()) return std::nullopt;
 	return value;
-}
-
-// Only explicit memory labels qualify; never use edge or junction readings.
-inline bool IsMemoryTemperatureLabel(std::string label) {
-    std::transform(label.begin(), label.end(), label.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return label == "mem" || label == "memory" || label == "vram" ||
-           label == "memory junction";
 }
 
 inline std::optional<uint64_t> ClockMHz(const std::string& hz) {
