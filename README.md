@@ -22,6 +22,9 @@ The only things you provide:
 
 ## Downloads
 
+**Fork release `v0.3.0+ykovbtc.1`** is based on upstream 0.3.0 at commit `141afe5cad64c139171e132f76a27824dd2350ec`.
+The suffix identifies the downstream revision. The native build, launcher, and default AppImage release name read the fork version from `beta/launcher/VERSION`.
+
 From [Releases](https://github.com/dmorazasanchez/KytyPS5-Native-beta/releases), pick **one** of the first three:
 
 | File | What it is |

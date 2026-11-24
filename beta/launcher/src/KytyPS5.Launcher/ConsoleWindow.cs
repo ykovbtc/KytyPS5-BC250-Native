@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
@@ -47,7 +48,7 @@ internal sealed partial class ConsoleWindow : Window
     {
         _audio.Configure(_preferences.Audio);
         _audio.Sounds.Schedule = callback => Dispatcher.UIThread.Post(callback, DispatcherPriority.Input);
-        Title = "KytyPS5";
+        Title = "KytyPS5 v" + typeof(ConsoleWindow).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion;
         Width = 1440; Height = 810; MinWidth = 960; MinHeight = 540;
         Background = Brush("#080D16");
         WindowStartupLocation = WindowStartupLocation.CenterScreen;

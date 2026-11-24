@@ -238,7 +238,7 @@ internal sealed partial class ConsoleWindow
 
     private void ShowSystem(Action<string, string[]> runPowerCommand)
     {
-        var stack = BeginModal("Control centre", _gameProcess is null ? "KytyPS5  /  Ready to play" : "A game session is running.");
+        var stack = BeginModal("Control centre", Title + (_gameProcess is null ? "  /  Ready to play" : "  /  A game session is running."));
         var items = new List<(string, Action)> { ("Back", CloseModal), ("Global settings", () => { CloseModal(); ShowSettings(null); }),
             ("Session log", ShowLog), ("Open terminal", () => { CloseModal(); StartTool("/usr/bin/konsole"); }) };
         if (_gameProcess is not null) items.Add(("Stop game", () => Confirm("Stop game?", "Unsaved game progress may be lost.", "Stop game", () => StopGame())));

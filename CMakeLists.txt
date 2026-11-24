@@ -138,7 +138,13 @@ if (KYTY_LINKER STREQUAL LD AND NOT LINUX)
 	set(KYTY_LD_OPTIONS "-Wl,--image-base=0x100000000000")
 endif()
 
-project(Kyty${KYTY_PROJECT_NAME}${CMAKE_BUILD_TYPE}${KYTY_COMPILER} VERSION 0.3.1)
+set(KYTY_VERSION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/beta/launcher/VERSION")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${KYTY_VERSION_FILE}")
+file(STRINGS "${KYTY_VERSION_FILE}" KYTY_FORK_VERSION)
+if(NOT KYTY_FORK_VERSION MATCHES "^([0-9]+[.][0-9]+[.][0-9]+)[+]ykovbtc[.]([1-9][0-9]*)$")
+    message(FATAL_ERROR "Expected <upstream-version>+ykovbtc.<revision> in ${KYTY_VERSION_FILE}")
+endif()
+project(Kyty${KYTY_PROJECT_NAME}${CMAKE_BUILD_TYPE}${KYTY_COMPILER} VERSION ${CMAKE_MATCH_1})
 
 include_directories(
 	${KYTY_THIRD_PARTY_DIR}/gtest/include
@@ -149,7 +155,7 @@ include_directories(
 	${KYTY_SOURCE_DIR}
 )
 
-set(KYTY_VERSION "${PROJECT_VERSION}")
+set(KYTY_VERSION "v${KYTY_FORK_VERSION}")
 
 configure_file(
   ${KYTY_SOURCE_DIR}/cmake_config.h.in

@@ -2,7 +2,7 @@
 """Re-spin a release from the previous release's package: same emulator backends and bundled runtimes, with the
 scripts and tools of this source tree laid over them.
 
-  respin.py stage  PREVIOUS_APPDIR VERSION [NAME=ELF ...]
+  respin.py stage  PREVIOUS_APPDIR [VERSION] [NAME=ELF ...]
                                                work/KytyPS5-Beta.AppDir = previous package + this tree's files; each
                                                NAME=ELF replaces that emulator backend (and the names linked to it)
   respin.py finish PREVIOUS_APPIMAGE           manifests, FILES.sha256, AppImage (previous AppImage's runtime), tar.gz, zip
@@ -71,7 +71,11 @@ def version():
     return (root / 'VERSION').read_text().strip()
 
 
-def stage(previous, new_version, *replacements):
+def stage(previous, *args):
+    new_version = 'v' + (repo / 'beta/launcher/VERSION').read_text().strip()
+    replacements = args
+    if args and '=' not in args[0]:
+        new_version, *replacements = args  # explicit historical or test package version
     previous = Path(previous)
     new_backends = {}
     helper = None
@@ -231,6 +235,6 @@ def sums():
 if __name__ == '__main__':
     commands = {'stage': (stage, None), 'finish': (finish, 1), 'minimal': (minimal, 1), 'source': (source, 0), 'sums': (sums, 0)}
     if len(sys.argv) < 2 or sys.argv[1] not in commands or (
-            len(sys.argv) - 2 != commands[sys.argv[1]][1] if commands[sys.argv[1]][1] is not None else len(sys.argv) < 4):
+            len(sys.argv) - 2 != commands[sys.argv[1]][1] if commands[sys.argv[1]][1] is not None else len(sys.argv) < 3):
         raise SystemExit(__doc__)
     commands[sys.argv[1]][0](*sys.argv[2:])
