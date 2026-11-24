@@ -98,13 +98,6 @@ with tempfile.TemporaryDirectory(prefix='kyty-beta-package-') as temp:
               [f'Argument: --screen-width\nArgument: {width}', f'Argument: --screen-height\nArgument: {height}'],
               ['KYTY_UPSCALE_OUTPUT=', 'Argument: 3840', 'Argument: 2160'],
               args=['--game', str(temp/'eboot.bin'), '--screen-width', '3840', '--screen-height', '2160'])
-    for model in ('hlx_dlss_e', 'hlx_fsr4'):
-        for preset in ('dynamic', 'quality'):
-            for fg in ('off', 'fsr3'):
-                route(dict(extra, KYTY_BC250_TITLE_ID='PPSA03671', KYTYPS5_HDMI_MODE='2560x1440',
-                           KYTY_UPSCALER=model, KYTY_UPSCALE_OUTPUT='1080', KYTY_UPSCALE_PRESET=preset, KYTY_FRAMEGEN=fg),
-                      f'Wolverine HDMI with {model}, {preset}, FG {fg}', 'kyty_emulator_auto_upscaler',
-                      ['KYTY_UPSCALE_OUTPUT=1080'], args=['--game', str(temp/'eboot.bin')])
     route({}, 'Native ray tracing and activity', 'kyty_emulator_native',
           ['Argument: --native-rt', 'Argument: --launch-activity', 'Argument: Mission'], args=['--native-rt', '--launch-activity', 'Mission'])
     route({'KYTY_NATIVE_GPU_PM4_MODE': 'fast'}, 'Fast with native RT enabled', 'kyty_emulator_fast',

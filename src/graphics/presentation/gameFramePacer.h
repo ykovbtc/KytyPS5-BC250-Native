@@ -11,8 +11,14 @@ class GameFramePacer {
 public:
 	using Clock = std::chrono::steady_clock;
 
-	explicit GameFramePacer(uint32_t fps)
-	    : m_period(fps == 0 ? Clock::duration::zero() : Clock::duration(std::chrono::seconds(1)) / fps) {}
+	explicit GameFramePacer(uint32_t fps) { SetLimit(fps); }
+
+	void SetLimit(uint32_t fps) {
+		if (m_fps == fps) return;
+		m_fps = fps;
+		m_period = fps == 0 ? Clock::duration::zero() : Clock::duration(std::chrono::seconds(1)) / fps;
+		Reset();
+	}
 
 	bool Enabled() const { return m_period != Clock::duration::zero(); }
 	bool Due(Clock::time_point now) const { return now >= m_next; }
@@ -27,7 +33,8 @@ public:
 	}
 
 private:
-	Clock::duration   m_period;
+	uint32_t          m_fps = 0;
+	Clock::duration   m_period {};
 	Clock::time_point m_next = Clock::time_point::min();
 };
 

@@ -21,7 +21,7 @@ case "$fg_mode" in off|fixed|adaptive) ;; *) fg_mode=off ;; esac
 unset KYTY_SHARP_FG_MODE
 # Native upscaler build (copy of the selector for the upscaling frontend build): captured before the KYTY_* strip.
 up_build="${KYTY_NATIVE_UPSCALER_BUILD:-0}"; up_kind="${KYTY_UPSCALER:-game}"; up_preset="${KYTY_UPSCALE_PRESET:-dynamic}"
-up_output="${KYTY_UPSCALE_OUTPUT:-}"; case "$up_output" in 1800|1440|1080) ;; *) up_output= ;; esac
+up_output="${KYTY_UPSCALE_OUTPUT:-}"; case "$up_output" in 1800|1440) ;; *) up_output= ;; esac
 up_fg="${KYTY_FRAMEGEN:-}"; case "$up_fg" in off|fsr3|fsr3_dynamic|auto) ;; *) up_fg= ;; esac
 case "$up_kind" in auto|game|hlx_fsr4|hlx_dlss_e) ;; *) up_kind=game ;; esac
 unset KYTY_NATIVE_UPSCALER_BUILD KYTY_UPSCALER KYTY_UPSCALE_PRESET KYTY_UPSCALE_OUTPUT KYTY_FRAMEGEN KYTY_RENDER_PRESET_PATCH
@@ -273,12 +273,12 @@ PY
         fi
         if cp -f -- "$tested" "$tested_copy" 2>/dev/null; then
             up_profile="$tested_copy" up_state=available up_fg_state=available up_adapter=taa_static_v1
-            # Keep the legacy window override. An explicit HDMI mode also caps the reconstruction inside HLX.
+            # HLX upscales to the game's own target (4K / 1440p, see below); a smaller HLX output would only be scaled
+            # back up into it. The output choice still sets the window (the presenter scales to the display).
             if [[ -n "$up_output" ]]; then
                 # The launcher requests a 4K window for intermediate HLX output sizes. This title
                 # uses its own internal output size, so apply the chosen size to its window here.
                 case "$up_output" in
-                    1080) window_width=1920 ;;
                     1440) window_width=2560 ;;
                     1800) window_width=3200 ;;
                 esac
@@ -292,7 +292,7 @@ PY
                 done
                 set -- "${window_args[@]}" --screen-width "$window_width" --screen-height "$up_output"
             fi
-            if [[ -z "${KYTYPS5_HDMI_MODE:-}" ]]; then up_output=; fi
+            up_output=
             # Render presets (wolverine-render-preset.py): each graphics mode renders at its own target / the preset's
             # ratio (Fidelity and the menus upscale to 3840x2160, Performance to 2560x1440, whatever the window size;
             # the output choice only scales the window), always below the target (Native AA one step below).

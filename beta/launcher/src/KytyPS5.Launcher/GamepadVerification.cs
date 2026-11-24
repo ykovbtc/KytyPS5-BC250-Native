@@ -24,6 +24,15 @@ internal static class GamepadVerification
                 check(!pad.Poll(true).Contains(action), "SDL edge detection: " + action);
                 SDL_JoystickSetVirtualButton(joystick, button, 0); pad.Poll(true);
             }
+            foreach (var (button, action) in new[] { (13, PadAction.Left), (14, PadAction.Right) })
+            {
+                SDL_JoystickSetVirtualButton(joystick, button, 1);
+                bool Step(long ms, bool focused = true) => pad.Poll(true, focused, ms).Contains(action);
+                check(Step(0) && !Step(399) && Step(400) && !Step(599) && Step(600), "FPS tap and hold cadence: " + action);
+                check(!Step(800, false) && !Step(1000), "Leaving the FPS control cancels repeat: " + action);
+                SDL_JoystickSetVirtualButton(joystick, button, 0);
+                check(!Step(1200), "Release adds no FPS step");
+            }
             SDL_JoystickSetVirtualAxis(joystick, 0, 22000); check(pad.Poll(true).Contains(PadAction.Right), "Analog stick navigation");
             SDL_JoystickSetVirtualAxis(joystick, 0, 0); pad.Poll(true);
             SDL_JoystickSetVirtualButton(joystick, 0, 1); check(pad.Poll(false).Count == 0, "Background input suppression");

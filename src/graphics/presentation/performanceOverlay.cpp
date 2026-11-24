@@ -598,10 +598,6 @@ void DrawPerformance(const Snapshot& shown, vk::Extent2D extent, float scale) {
     ImGui::SameLine(0, 0);
     ImGui::TextUnformatted(" | CPU ");
     PerformanceValue(host.cpu_temperature, "°C", 75, 85);
-    ImGui::SameLine(0, 0);
-    ImGui::TextUnformatted(" | VRAM ");
-    PerformanceValue(host.vram_temperature, "°C", 60, 75);
-
 	ImGui::PopTextWrapPos();
 }
 

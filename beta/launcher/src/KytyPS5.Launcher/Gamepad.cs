@@ -29,7 +29,9 @@ internal sealed class Gamepad : IDisposable
         catch (DllNotFoundException) { }
     }
 
-    public List<PadAction> Poll(bool active)
+    private bool _fpsFocused;
+
+    public List<PadAction> Poll(bool active, bool fpsFocused = false, long? timestamp = null)
     {
         var result = new List<PadAction>();
         if (!_ready) return result;
@@ -40,7 +42,13 @@ internal sealed class Gamepad : IDisposable
         {
             SDL_GameControllerClose(_pad); _pad = IntPtr.Zero; _previous = 0; _repeats.Clear();
         }
-        var now = Environment.TickCount64;
+        var now = timestamp ?? Environment.TickCount64;
+        if (_fpsFocused != fpsFocused)
+        {
+            _repeats.Remove(PadAction.Left);
+            _repeats.Remove(PadAction.Right);
+            _fpsFocused = fpsFocused;
+        }
         if (_pad == IntPtr.Zero && now >= _scanAt)
         {
             _scanAt = now + 1000;
@@ -69,15 +77,16 @@ internal sealed class Gamepad : IDisposable
         foreach (var (bit, action) in mapping)
         {
             var held = (buttons & (1u << bit)) != 0;
+            var fpsArrow = fpsFocused && (action is PadAction.Left or PadAction.Right);
             if (!active || !held) { _repeats.Remove(action); continue; }
             if ((_previous & (1u << bit)) == 0)
             {
-                result.Add(action); _repeats[action] = now + 380;
+                result.Add(action); _repeats[action] = now + (fpsArrow ? FpsLimit.HoldDelay : 380);
             }
             else if (action is PadAction.Up or PadAction.Down or PadAction.Left or PadAction.Right &&
                 _repeats.TryGetValue(action, out var at) && now >= at)
             {
-                result.Add(action); _repeats[action] = now + 110;
+                result.Add(action); _repeats[action] = fpsArrow ? Math.Max(now + 1, at + FpsLimit.RepeatInterval) : now + 110;
             }
         }
         _previous = buttons;

@@ -22,6 +22,9 @@ The only things you provide:
 
 ## Downloads
 
+**Fork release `v0.3.0+ykovbtc.1`** is based on upstream 0.3.0 at commit `141afe5cad64c139171e132f76a27824dd2350ec`.
+The suffix identifies the downstream revision. The native build, launcher, and default AppImage release name read the fork version from `beta/launcher/VERSION`.
+
 From [Releases](https://github.com/dmorazasanchez/KytyPS5-Native-beta/releases), pick **one** of the first three:
 
 | File | What it is |
@@ -185,8 +188,9 @@ Set these per game in the launcher (**game → Settings → Upscaling / Frame ge
 The [tested games](#tested-games) start with their tested choice.
 
 **Frame pacing → Maximum game FPS** caps real game frames on the current native and upscaler backends.
-Enter a whole number from 1 to 360, or 0 for Off. For example, keep Ghost of Yōtei in Performance mode with
-a 60 Hz virtual display and enter 48 or 55 in its per-game settings. The cap applies on the next launch.
+Turn **FPS limit** on to restore the last value (60 FPS on first use). Use **−** and **+**, or press Left and Right, to adjust between 20 and 120 FPS.
+A tap changes the limit by 1 FPS. Hold for 400 ms to repeat five times per second. For Ghost of Yōtei,
+you can keep Performance mode and a 60 Hz virtual display and select 48 or 55 FPS. Launcher changes apply on the next launch. With the limit enabled, **PS button → Frame pacing** adjusts it immediately with Left and Right and saves the new value for this game.
 Frame generation can still add displayed frames. To measure the cap on its own, turn off native and Lossless
 frame generation. The emulator also accepts `--max-game-fps 48` on the command line.
 

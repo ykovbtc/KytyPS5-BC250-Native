@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
@@ -47,7 +48,7 @@ internal sealed partial class ConsoleWindow : Window
     {
         _audio.Configure(_preferences.Audio);
         _audio.Sounds.Schedule = callback => Dispatcher.UIThread.Post(callback, DispatcherPriority.Input);
-        Title = "KytyPS5";
+        Title = "KytyPS5 v" + typeof(ConsoleWindow).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion;
         Width = 1440; Height = 810; MinWidth = 960; MinHeight = 540;
         Background = Brush("#080D16");
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -85,9 +86,15 @@ internal sealed partial class ConsoleWindow : Window
         Grid.SetColumn(system, 1); footer.Children.Add(system); Grid.SetRow(footer, 2); layout.Children.Add(footer);
         Content = new Viewbox { Stretch = Stretch.Uniform, Child = _scene };
         AddHandler(KeyDownEvent, OnInputKey, RoutingStrategies.Tunnel);
+        AddHandler(KeyUpEvent, (_, e) =>
+        {
+            _fpsKeys.Remove(e.Key);
+            if (_fpsHeldKey == e.Key) StopFpsRepeat();
+        }, RoutingStrategies.Tunnel);
+        Deactivated += (_, _) => { _fpsKeys.Clear(); StopFpsRepeat(); };
         _inputTimer.Tick += (_, _) =>
         {
-            foreach (var action in _pad.Poll(IsActive)) Navigate(action);
+            foreach (var action in _pad.Poll(IsActive, FpsRowFocused)) Navigate(action);
             var status = _pad.Connected ? _pad.Name : "Keyboard ready";
             if (_inputStatus != status) { _inputStatus = status; _connection.Text = status.Length > 28 ? "Controller connected" : status; UpdateHints(); }
             if (Environment.TickCount64 > _clockAt) { _clockAt = Environment.TickCount64 + 15000; _clock.Text = DateTime.Now.ToString("HH:mm"); }
@@ -322,6 +329,20 @@ internal sealed partial class ConsoleWindow : Window
 
     private void OnInputKey(object? sender, KeyEventArgs e)
     {
+        if (e.Key is Key.Left or Key.Right)
+        {
+            bool first = _fpsKeys.Add(e.Key);
+            if (FpsRowFocused)
+            {
+                if (first)
+                {
+                    StartFpsRepeat(e.Key == Key.Left ? -1 : 1);
+                    _fpsHeldKey = e.Key;
+                }
+                e.Handled = true;
+                return;
+            }
+        }
         if (e.Key == Key.F11) { WindowState = WindowState == WindowState.FullScreen ? WindowState.Maximized : WindowState.FullScreen; e.Handled = true; return; }
         var action = e.Key switch { Key.Up => PadAction.Up, Key.Down => PadAction.Down, Key.Left => PadAction.Left, Key.Right => PadAction.Right,
             Key.Enter => PadAction.Accept, Key.Escape => PadAction.Back, Key.F3 => PadAction.Settings,
@@ -410,7 +431,8 @@ internal sealed partial class ConsoleWindow : Window
             var logDir = System.IO.Path.Combine(Preferences.Root, "logs"); Directory.CreateDirectory(logDir);
             _logFile = System.IO.Path.Combine(logDir, $"{game.TitleId}-{DateTime.Now:yyyyMMdd-HHmmss}.log");
             _logLines.Clear();
-            using var process = new Process { StartInfo = info };
+            var process = new Process { StartInfo = info };
+            _gameProcess = process;
             // Stream to disk without accumulating a session-sized log in memory.
             using var writer = new StreamWriter(_logFile, false) { AutoFlush = true };
             void Log(object sender, DataReceivedEventArgs args)
@@ -418,32 +440,26 @@ internal sealed partial class ConsoleWindow : Window
                 if (args.Data is null) return;
                 lock (writer) { writer.WriteLine(args.Data); _logLines.Enqueue(args.Data); while (_logLines.Count > 150) _logLines.Dequeue(); }
             }
-            process.OutputDataReceived += Log; process.ErrorDataReceived += Log;
-            string[]? restoreHdmi = null;
-            try
+            var pacingToken = command.Environment.GetValueOrDefault("KYTYPS5_PACING_TOKEN");
+            void ErrorLog(object sender, DataReceivedEventArgs args)
             {
-                if (command.Environment.GetValueOrDefault("KYTYPS5_HDMI_MODE") is { } hdmi)
-                {
-                    var previous = await RunHdmiHelperAsync(hdmi);
-                    if (previous.Length > 0) restoreHdmi = JsonSerializer.Deserialize<string[]>(previous);
-                }
-                if (_closing) return;
-                if (!process.Start()) throw new IOException("Could not start the native runtime.");
-                _gameProcess = process;
-                _launching = false;
-                process.BeginOutputReadLine(); process.BeginErrorReadLine();
-                _inputTimer.Interval = TimeSpan.FromMilliseconds(250); ShowHome();
-                await process.WaitForExitAsync();
-                process.WaitForExit();
+                Log(sender, args);
+                if (string.IsNullOrEmpty(pacingToken) || args.Data is null) return;
+                try { KytyBridge.SaveLiveFps(game.TitleId, game.Path, pacingToken, args.Data); }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
+                { lock (writer) writer.WriteLine("Could not save live FPS limit: " + error.Message); }
             }
-            finally
-            {
-                if (restoreHdmi is not null) await RunHdmiHelperAsync(restoreHdmi);
-            }
+            process.OutputDataReceived += Log; process.ErrorDataReceived += ErrorLog;
+            if (!process.Start()) throw new IOException("Could not start the native runtime.");
+            _launching = false;
+            process.BeginOutputReadLine(); process.BeginErrorReadLine();
+            _inputTimer.Interval = TimeSpan.FromMilliseconds(250); ShowHome();
+            await process.WaitForExitAsync();
+            process.WaitForExit();
             var code = process.ExitCode;
-            process.OutputDataReceived -= Log; process.ErrorDataReceived -= Log;
+            process.OutputDataReceived -= Log; process.ErrorDataReceived -= ErrorLog;
             if (!_closing) await RestoreDashboardSdrAsync();
-            _gameProcess = null;
+            process.Dispose(); _gameProcess = null;
             _inputTimer.Interval = TimeSpan.FromMilliseconds(33);
             if (_closing) return;
             _audio.Resume(); OpenPage("home"); Activate(); PlayMusic();
@@ -458,23 +474,6 @@ internal sealed partial class ConsoleWindow : Window
             Message("Could not launch game", e.Message);
         }
         finally { _launching = false; }
-    }
-
-    private static async Task<string> RunHdmiHelperAsync(params string[] arguments)
-    {
-        var bundle = Environment.GetEnvironmentVariable("KYTYPS5_BUNDLE_ROOT")
-            ?? throw new IOException("Cannot locate the PS5 Minimal Mode display tools.");
-        var info = new ProcessStartInfo(System.IO.Path.Combine(bundle, "bin/python3"))
-            { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
-        info.ArgumentList.Add("-I");
-        info.ArgumentList.Add(System.IO.Path.Combine(bundle, "session-hdmi.py"));
-        foreach (var argument in arguments) info.ArgumentList.Add(argument);
-        using var process = Process.Start(info) ?? throw new IOException("Could not start the HDMI display tool.");
-        var output = process.StandardOutput.ReadToEndAsync();
-        var error = process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
-        if (process.ExitCode != 0) throw new IOException((await error).Trim());
-        return (await output).Trim();
     }
 
     private async Task RestoreDashboardSdrAsync()
